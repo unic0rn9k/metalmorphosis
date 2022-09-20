@@ -1,0 +1,10 @@
+[package]
+name = "metalmorphosis"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rmp-serde = "1.1.0"
+serde = "1.0.144"
+serde_derive = "1.0.144"
+thiserror = "1.0.35"
