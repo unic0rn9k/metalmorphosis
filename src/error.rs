@@ -9,29 +9,20 @@ pub enum Error<T: Program> {
     #[error("Error sending data to local executor `{0}`")]
     SendError(SendError<(T, usize, (*mut u8, usize))>),
 
-    #[error("Encode error `{0}`")]
-    EncodeError(encode::Error),
+    #[error(transparent)]
+    EncodeError(#[from] encode::Error),
 
-    #[error("Decode error `{0}`")]
-    DecodeError(decode::Error),
+    #[error(transparent)]
+    DecodeError(#[from] decode::Error),
 
-    #[error("Error receiving data from local task `{0}`")]
-    ReceiveError(TryRecvError),
+    #[error(transparent)]
+    ReceiveError(#[from] TryRecvError),
+}
+
+impl<T: Program> From<SendError<(T, usize, (*mut u8, usize))>> for Error<T> {
+    fn from(v: SendError<(T, usize, (*mut u8, usize))>) -> Self {
+        Self::SendError(v)
+    }
 }
 
 pub type Result<T, P> = std::result::Result<T, Error<P>>;
-
-macro_rules! impl_convert_err {
-    ($from: ty, $to: ident) => {
-        impl<T: Program> From<$from> for Error<T> {
-            fn from(from: $from) -> Self {
-                Self::$to(from)
-            }
-        }
-    };
-}
-
-impl_convert_err!(decode::Error, DecodeError);
-impl_convert_err!(encode::Error, EncodeError);
-impl_convert_err!(SendError<(T, usize, (*mut u8, usize))>, SendError);
-impl_convert_err!(TryRecvError, ReceiveError);
