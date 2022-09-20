@@ -18,7 +18,7 @@ impl<T: Program> Executor<T> {
     }
 
     pub fn run(&mut self, main: T) -> Result<(), T> {
-        self.branch(main, 0, ((&mut [] as *mut u8), 0));
+        self.branch(main, 0, &mut vec![] as *mut Vec<u8>);
         let mut n = 0;
 
         'polling: loop {

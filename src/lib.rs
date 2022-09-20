@@ -5,10 +5,12 @@
 #[cfg(test)]
 mod tests;
 
-use rmp_serde as rmps;
-use rmps::Serializer;
+use bincode;
+use bincode::Serializer;
 use serde::{Deserialize, Serialize};
 use std::future::Future;
+use std::intrinsics::transmute;
+use std::mem::transmute_copy;
 use std::pin::Pin;
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::Arc;
@@ -21,7 +23,7 @@ mod error;
 use error::*;
 
 pub type BasicFuture = Box<dyn Future<Output = ()> + Unpin>;
-pub type OutputSlice = (*mut u8, usize);
+pub type OutputSlice = *mut Vec<u8>;
 
 pub struct TaskNode<T: Program> {
     sender: SyncSender<(T, usize, OutputSlice)>,
@@ -44,20 +46,19 @@ impl Wake for NilWaker {
 
 impl<T: Program> TaskNode<T> {
     pub fn write_output<O: MorphicIO>(&self, o: O) -> Result<(), T> {
-        let buffer = unsafe { std::slice::from_raw_parts_mut(self.output.0, self.output.1) };
-        Ok(o.serialize(&mut Serializer::new(buffer))?)
+        unsafe { *self.output = bincode::serialize(&o)? }
+        Ok(())
     }
 
     pub async fn branch<O: MorphicIO>(&self, token: T) -> Result<O, T> {
         println!("      +__");
         println!("      |  [{:?}]", token);
         println!("      |  ");
-        let o_size = std::mem::size_of::<O>();
-        let mut buffer = vec![0u8; o_size];
+        let mut buffer = vec![];
         self.sender
-            .send((token, self.this_node, (&mut buffer[0] as *mut u8, o_size)))?;
+            .send((token, self.this_node, &mut buffer as *mut Vec<u8>))?;
         halt_once().await;
-        Ok(rmps::from_slice(unsafe {
+        Ok(bincode::deserialize(unsafe {
             std::mem::transmute(&mut buffer[..])
         })?)
     }
