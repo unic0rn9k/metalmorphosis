@@ -1,8 +1,8 @@
 use crate::*;
 
 pub struct Executor<T: Program> {
-    queue: Receiver<Branch<T>>,
-    self_sender: SyncSender<Branch<T>>,
+    queue: Receiver<Signal<T>>,
+    self_sender: SyncSender<Signal<T>>,
     task_graph: Vec<Arc<TaskNode<T>>>,
     optimizer: optimizer::Optimizer<T>,
 }
@@ -20,7 +20,7 @@ impl<T: Program> Executor<T> {
     }
 
     pub fn run(&mut self, main: T) -> Result<(), T> {
-        self.branch(Branch::Task {
+        self.branch(Signal::Branch {
             token: main,
             parent: 0,
             output: OutputSlice {
@@ -80,8 +80,8 @@ impl<T: Program> Executor<T> {
         }
     }
 
-    pub fn branch(&mut self, branch: Branch<T>) {
-        let Branch::Task {
+    pub fn branch(&mut self, branch: Signal<T>) {
+        let Signal::Branch {
             parent,
             output,
             token,

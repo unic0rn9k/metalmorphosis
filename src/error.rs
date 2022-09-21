@@ -1,13 +1,13 @@
 use bincode;
 use std::sync::mpsc::{SendError, TryRecvError};
 
-use crate::{OutputSlice, Program};
+use crate::{Program, Signal};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum Error<T: Program> {
     #[error("Error sending data to local executor `{0}`")]
-    SendError(SendError<(T, usize, OutputSlice)>),
+    SendError(SendError<Signal<T>>),
 
     #[error(transparent)]
     BincodeError(#[from] bincode::Error),
@@ -16,8 +16,8 @@ pub enum Error<T: Program> {
     ReceiveError(#[from] TryRecvError),
 }
 
-impl<T: Program> From<SendError<(T, usize, OutputSlice)>> for Error<T> {
-    fn from(v: SendError<(T, usize, OutputSlice)>) -> Self {
+impl<T: Program> From<SendError<Signal<T>>> for Error<T> {
+    fn from(v: SendError<Signal<T>>) -> Self {
         Self::SendError(v)
     }
 }

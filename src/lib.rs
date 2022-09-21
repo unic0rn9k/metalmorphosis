@@ -27,9 +27,9 @@ pub union OutputSlice {
     fast_and_unsafe: *mut u8,
 }
 
-pub enum Branch<T: Program> {
-    Waker,
-    Task {
+pub enum Signal<T: Program> {
+    Wake,
+    Branch {
         token: T,
         parent: usize,
         output: OutputSlice,
@@ -38,13 +38,13 @@ pub enum Branch<T: Program> {
 }
 
 pub struct TaskNode<T: Program> {
-    sender: SyncSender<Branch<T>>,
+    sender: SyncSender<Signal<T>>,
     output: OutputSlice,
     future: BasicFuture,
     parent: usize,
     this_node: usize,
-    token: T,
     children: usize,
+    token: T,
     optimizer: *const optimizer::Optimizer<T>,
     optimizer_hint: optimizer::HintFromOptimizer,
 }
@@ -73,37 +73,34 @@ impl<T: Program> TaskNode<T> {
         println!("      |  ");
 
         let optimizer_hint = (unsafe { &*self.optimizer }).hint(token);
+        let parent = self.this_node;
+        let (mut buffer, output);
 
         if optimizer_hint.fast_and_unsafe_serialization {
             let o_size = std::mem::size_of::<O>();
-            let mut buffer = vec![0; o_size];
-            self.sender
-                .send(Branch::Task {
-                    token,
-                    parent: self.this_node,
-                    output: OutputSlice {
-                        fast_and_unsafe: buffer.as_mut_ptr(),
-                    },
-                    optimizer_hint,
-                })
-                .unwrap();
-            // TODO: remove unwrap above
-            halt_once().await;
+            buffer = Vec::with_capacity(o_size);
+            output = OutputSlice {
+                fast_and_unsafe: buffer.as_mut_ptr(),
+            };
+        } else {
+            buffer = Vec::with_capacity(0);
+            output = OutputSlice {
+                vec: &mut buffer as &mut Vec<u8>,
+            };
+        };
+
+        self.sender.send(Signal::Branch {
+            token,
+            parent,
+            output,
+            optimizer_hint,
+        })?;
+
+        halt_once().await;
+
+        if optimizer_hint.fast_and_unsafe_serialization {
             unsafe { Ok(std::ptr::read(buffer.as_ptr() as *const O)) }
         } else {
-            let mut buffer = vec![];
-            self.sender
-                .send(Branch::Task {
-                    token,
-                    parent: self.this_node,
-                    output: OutputSlice {
-                        vec: &mut buffer as *mut Vec<u8>,
-                    },
-                    optimizer_hint,
-                })
-                .unwrap();
-            // TODO: remove unwrap above
-            halt_once().await;
             Ok(bincode::deserialize(unsafe {
                 std::mem::transmute(&mut buffer[..])
             })?)
@@ -123,7 +120,7 @@ pub trait MorphicIO: Serialize + Deserialize<'static> {
 
 pub trait Program: Copy + std::fmt::Debug {
     type Future: Future<Output = ()> + Unpin + 'static;
-    fn future(&self, task_handle: Arc<TaskNode<Self>>) -> Self::Future;
+    fn future(self, task_handle: Arc<TaskNode<Self>>) -> Self::Future;
 }
 
 #[inline(always)]

@@ -18,36 +18,38 @@ fn basic() {
     enum TestProgram {
         Main,
         A,
-        B,
+        B(u32),
         C,
     }
 
     impl Program for TestProgram {
         type Future = Pin<Box<dyn Future<Output = ()>>>;
 
-        fn future(&self, task_handle: Arc<TaskNode<Self>>) -> Self::Future {
+        fn future(self, task_handle: Arc<TaskNode<Self>>) -> Self::Future {
             use TestProgram::*;
             match self {
                 Main => Box::pin(async move {
                     println!("::start");
-                    let a = task_handle.branch::<u32>(A);
-                    let b = task_handle.branch::<u32>(B);
-                    let (a, b) = join!(a, b).await;
-                    println!("== {}", a.unwrap() + b.unwrap());
 
+                    let a = task_handle.branch::<u32>(A);
+                    let b = task_handle.branch::<u32>(B(2));
+                    let (a, b) = join!(a, b).await;
+
+                    assert_eq!(a.unwrap() + b.unwrap(), 3);
                     assert_eq!(
                         task_handle.branch::<TestData>(C).await.unwrap(),
                         TestData::B
                     );
+
                     println!("::end");
                 }),
                 A => Box::pin(async move {
                     println!("::A");
                     task_handle.write_output(1).unwrap();
                 }),
-                B => Box::pin(async move {
+                B(n) => Box::pin(async move {
                     println!("::B");
-                    task_handle.write_output(2).unwrap();
+                    task_handle.write_output(n).unwrap();
                 }),
                 C => Box::pin(async move { task_handle.write_output(TestData::B).unwrap() }),
             }
