@@ -1,9 +1,10 @@
 use crate::*;
 
 pub struct Executor<T: Program> {
-    queue: Receiver<(T, usize, OutputSlice)>,
-    self_sender: SyncSender<(T, usize, OutputSlice)>,
+    queue: Receiver<Branch<T>>,
+    self_sender: SyncSender<Branch<T>>,
     task_graph: Vec<Arc<TaskNode<T>>>,
+    optimizer: optimizer::Optimizer<T>,
 }
 
 impl<T: Program> Executor<T> {
@@ -14,11 +15,19 @@ impl<T: Program> Executor<T> {
             queue,
             self_sender,
             task_graph: vec![],
+            optimizer: optimizer::Optimizer::new(),
         }
     }
 
     pub fn run(&mut self, main: T) -> Result<(), T> {
-        self.branch(main, 0, &mut vec![] as *mut Vec<u8>);
+        self.branch(Branch::Task {
+            token: main,
+            parent: 0,
+            output: OutputSlice {
+                vec: &mut vec![] as *mut Vec<u8>,
+            },
+            optimizer_hint: optimizer::main_hint(),
+        });
         let mut n = 0;
 
         'polling: loop {
@@ -28,8 +37,7 @@ impl<T: Program> Executor<T> {
                 println!("Ran out of nodes. Fetching new ones...");
                 let mut branch = self.queue.try_recv();
                 while branch.is_ok() {
-                    let (token, parent, output) = unsafe { branch.unwrap_unchecked() };
-                    self.branch(token, parent, output);
+                    self.branch(unsafe { branch.unwrap_unchecked() });
                     branch = self.queue.try_recv();
                 }
             }
@@ -72,11 +80,19 @@ impl<T: Program> Executor<T> {
         }
     }
 
-    pub fn branch(&mut self, token: T, parent: usize, output: OutputSlice) {
+    pub fn branch(&mut self, branch: Branch<T>) {
+        let Branch::Task {
+            parent,
+            output,
+            token,
+            optimizer_hint,
+        } = branch else{todo!()};
+
         match self.task_graph.get_mut(parent) {
             None => {}
             Some(parent) => unsafe { Arc::get_mut_unchecked(parent).children += 1 },
         }
+
         let node = TaskNode {
             sender: self.self_sender.clone(),
             output,
@@ -85,7 +101,10 @@ impl<T: Program> Executor<T> {
             this_node: self.task_graph.len(),
             token,
             children: 0,
+            optimizer: &self.optimizer as *const optimizer::Optimizer<T>,
+            optimizer_hint,
         };
+
         self.task_graph.push(Arc::new(node));
         let last = self.task_graph.len() - 1;
         let node = &mut self.task_graph[last];

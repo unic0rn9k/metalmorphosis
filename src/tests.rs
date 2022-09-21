@@ -8,7 +8,7 @@ fn basic() {
     impl MorphicIO for u32 {}
     impl MorphicIO for TestData {}
 
-    #[derive(Debug, Serialize, Deserialize, PartialEq)]
+    #[derive(Debug, Serialize, Deserialize, PartialEq, Clone, Copy)]
     enum TestData {
         A,
         B,
