@@ -3,7 +3,7 @@ use crate::*;
 pub struct Executor<T: Program> {
     queue: Receiver<Signal<T>>,
     self_sender: SyncSender<Signal<T>>,
-    task_graph: Vec<Arc<TaskNode<T>>>,
+    task_graph: Vec<TaskNode<T>>,
     optimizer: optimizer::Optimizer<T>,
 }
 
@@ -24,7 +24,7 @@ impl<T: Program> Executor<T> {
             token: main,
             parent: 0,
             output: OutputSlice {
-                vec: &mut vec![] as *mut Vec<u8>,
+                fast_and_unsafe: &mut 0u8 as *mut u8,
             },
             optimizer_hint: optimizer::main_hint(),
         });
@@ -46,10 +46,7 @@ impl<T: Program> Executor<T> {
                 continue 'polling;
             }
 
-            if unsafe { Arc::get_mut_unchecked(&mut self.task_graph[n]) }
-                .poll()
-                .is_ready()
-            {
+            if self.task_graph[n].poll().is_ready() {
                 if self.task_graph[n].this_node == self.task_graph[n].parent {
                     self.task_graph.clear();
                     return Ok(());
@@ -57,11 +54,12 @@ impl<T: Program> Executor<T> {
                     let parent = self.task_graph[n].parent;
                     self.task_graph.remove(n);
                     n = parent;
-                    unsafe { Arc::get_mut_unchecked(&mut self.task_graph[n]).children -= 1 };
+                    self.task_graph[n].children -= 1;
                     continue 'polling;
                 }
             }
 
+            #[cfg(profile = "debug")]
             println!(":---- {n}\n:");
 
             n += 1;
@@ -78,7 +76,7 @@ impl<T: Program> Executor<T> {
 
         match self.task_graph.get_mut(parent) {
             None => {}
-            Some(parent) => unsafe { Arc::get_mut_unchecked(parent).children += 1 },
+            Some(parent) => parent.children += 1,
         }
 
         let node = TaskNode {
@@ -92,10 +90,10 @@ impl<T: Program> Executor<T> {
             optimizer_hint,
         };
 
-        self.task_graph.push(Arc::new(node));
+        self.task_graph.push(node);
         let last = self.task_graph.len() - 1;
         let node = &mut self.task_graph[last];
-        let tmp = Box::new(token.future(Arc::clone(node)));
-        unsafe { Arc::get_mut_unchecked(node) }.future = tmp;
+        let tmp = Box::new(token.future(unsafe { std::mem::transmute(&*node) }));
+        node.future = tmp;
     }
 }

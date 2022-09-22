@@ -1,13 +1,12 @@
-use crate::*;
+#![feature(future_join)]
+use std::pin::Pin;
 
-#[test]
-fn basic() {
+use metalmorphosis::*;
+
+fn main() {
     use serde_derive::{Deserialize, Serialize};
     use std::future::{join, Future};
 
-    unsafe impl MorphicIO for u32 {
-        const IS_COPY: bool = true;
-    }
     unsafe impl MorphicIO for TestData {
         const IS_COPY: bool = true;
     }
@@ -29,7 +28,7 @@ fn basic() {
     impl Program for TestProgram {
         type Future = Pin<Box<dyn Future<Output = ()>>>;
 
-        fn future(self, task_handle: Arc<TaskNode<Self>>) -> Self::Future {
+        fn future(self, task_handle: &'static TaskNode<Self>) -> Self::Future {
             use TestProgram::*;
             match self {
                 Main => Box::pin(async move {
@@ -37,13 +36,11 @@ fn basic() {
 
                     let a = task_handle.branch::<u32>(A);
                     let b = task_handle.branch::<u32>(B(2));
+                    let c = task_handle.branch::<TestData>(C);
                     let (a, b) = join!(a, b).await;
 
                     assert_eq!(a.unwrap() + b.unwrap(), 3);
-                    assert_eq!(
-                        task_handle.branch::<TestData>(C).await.unwrap(),
-                        TestData::B
-                    );
+                    assert_eq!(c.await.unwrap(), TestData::B);
 
                     println!("::end");
                 }),

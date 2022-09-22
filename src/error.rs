@@ -1,4 +1,3 @@
-use bincode;
 use std::sync::mpsc::{SendError, TryRecvError};
 
 use crate::{Program, Signal};

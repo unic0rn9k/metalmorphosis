@@ -5,13 +5,8 @@
 #![feature(let_else)]
 #![feature(generic_const_exprs)]
 
-#[cfg(test)]
-mod tests;
-
-use bincode;
 use serde::{Deserialize, Serialize};
 use std::future::Future;
-use std::intrinsics::transmute;
 use std::pin::Pin;
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::Arc;
@@ -23,6 +18,7 @@ use stupid_futures::*;
 mod error;
 use error::*;
 pub mod optimizer;
+mod primitives;
 
 pub type BasicFuture = Box<dyn Future<Output = ()> + Unpin>;
 
@@ -46,8 +42,9 @@ unsafe impl<T: Program> std::marker::Send for Signal<T> {}
 pub struct SignalWaker<T: Program>(usize, SyncSender<Signal<T>>);
 
 impl<T: Program> Wake for SignalWaker<T> {
+    #[inline(always)]
     fn wake(self: Arc<Self>) {
-        self.as_ref().1.send(Signal::Wake(self.0)).unwrap()
+        (*self).1.send(Signal::Wake(self.0)).unwrap()
     }
 }
 
@@ -63,23 +60,30 @@ pub struct TaskNode<T: Program> {
 }
 
 impl<T: Program> TaskNode<T> {
+    /// Return data from task to parent.
+    ///
+    /// # Safety
+    /// The function is not type checked, so it's up to you to make sure the type of the read data matches the written data.
+    #[inline(always)]
     pub unsafe fn write_output<O: MorphicIO>(&self, o: O) -> Result<(), T> {
-        if O::IS_COPY {
-            unsafe { std::ptr::write(self.output.fast_and_unsafe as *mut O, o) }
-        } else {
-            unsafe { *self.output.vec = bincode::serialize(&o)? }
+        unsafe {
+            if O::IS_COPY {
+                std::ptr::write(self.output.fast_and_unsafe as *mut O, o)
+            } else {
+                *self.output.vec = bincode::serialize(&o)?
+            }
         }
         Ok(())
     }
 
     pub async fn branch_copy<O: MorphicIO>(&self, token: T) -> Result<O, T> {
         unsafe {
-            let optimizer_hint = (&*self.optimizer).hint(&token);
+            let optimizer_hint = (*self.optimizer).hint(&token);
             let parent = self.this_node;
 
             let mut buffer = O::buffer();
             let output = OutputSlice {
-                fast_and_unsafe: transmute(&mut buffer),
+                fast_and_unsafe: &mut buffer as *mut O as *mut u8,
             };
 
             self.sender.send(Signal::Branch {
@@ -91,7 +95,7 @@ impl<T: Program> TaskNode<T> {
 
             halt_once().await;
 
-            Ok(std::ptr::read(transmute(&buffer)))
+            Ok(std::ptr::read(&buffer as *const O))
         }
     }
 
@@ -118,13 +122,17 @@ impl<T: Program> TaskNode<T> {
         })?)
     }
 
+    #[inline(always)]
     pub async fn branch<O: MorphicIO>(&self, token: T) -> Result<O, T> {
         // Branch is called before the executor is allowed to run,
         // therefore we need a way to figure out if data should be distributed (and more) here.
         // This is what i atempted to do with the Optimizer struct, which might implemented optimally.
-        println!(":     +__");
-        println!(":     |  [{:?}]", token);
-        println!(":     |  ");
+        #[cfg(profile = "debug")]
+        {
+            println!(":     +__");
+            println!(":     |  [{:?}]", token);
+            println!(":     |  ");
+        }
 
         //let mut opt_hint = [0u8; 4];
         //self.sender.send(Signal::GetOptHint(
@@ -150,12 +158,20 @@ impl<T: Program> TaskNode<T> {
 }
 
 /// Trait that must be implemented for all valued passed between `TaskNode`s.
-/// Will only be unsafe if IS_COPY is set to true.
+///
+/// # Safety
+/// Make sure `IS_COPY` is only true for types that implement copy.
 pub unsafe trait MorphicIO: Serialize + Deserialize<'static> + Send + Sync {
     const IS_COPY: bool = false;
     //const SIZE: usize;
     //fn local_serialize(self, buffer: &mut [u8]);
     //fn local_deserialize(self, buffer: &[u8]);
+
+    /// DON'T OVERWRITE THIS FUNCTION.
+    /// Returns a buffer that can fit Self, for use internally.
+    ///
+    /// # Safety
+    /// As long as `IS_COPY` is set correctly, theres no problem.
     #[inline(always)]
     unsafe fn buffer() -> Self {
         unsafe { std::mem::MaybeUninit::uninit().assume_init() }
@@ -164,7 +180,7 @@ pub unsafe trait MorphicIO: Serialize + Deserialize<'static> + Send + Sync {
 
 pub trait Program: std::fmt::Debug + Send + Sync + Sized + 'static {
     type Future: Future<Output = ()> + Unpin + 'static;
-    fn future(self, task_handle: Arc<TaskNode<Self>>) -> Self::Future;
+    fn future(self, task_handle: &'static TaskNode<Self>) -> Self::Future;
 }
 
 #[inline(always)]

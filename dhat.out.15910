@@ -1,0 +1,331 @@
+{"dhatFileVersion":2
+,"mode":"heap","verb":"Allocated"
+,"bklt":true,"bkacc":true
+,"tu":"instrs","Mtu":"Minstr"
+,"tuth":500
+,"cmd":"target/release/examples/basic"
+,"pid":15910
+,"te":530519
+,"tg":519247
+,"pps":
+ [{"tb":472,"tbk":1
+  ,"tl":166189
+  ,"mb":472,"mbk":1
+  ,"gb":0,"gbk":0
+  ,"eb":0,"ebk":0
+  ,"rb":3018,"wb":1366
+  ,"acc":[209,-3,155,-4,0,-8,197,-8,89,-8,12,-8,17,-16,12,-8,22,-8,13,-8,10,-16,1,-8,8,-8,3,-4,14,13,-3,5,-8,0,-2,1,-6,0,-8,5,-8,7,-8,0,-16,1,-16,0,-4,9,-20,0,-8,15,-4,6,-4,7,-8,4,-88,1,-136,0,-8,1]
+  ,"fs":[1,2,3,4,5,6,7,8,9,10,11,12,13]
+  }
+ ,{"tb":360,"tbk":2
+  ,"tl":165306
+  ,"mb":240,"mbk":1
+  ,"gb":0,"gbk":0
+  ,"eb":0,"ebk":0
+  ,"rb":6273,"wb":4933
+  ,"fs":[1,14,15,4,5,6,7,8,9,10,11,12,13]
+  }
+ ,{"tb":1024,"tbk":1
+  ,"tl":165341
+  ,"mb":1024,"mbk":1
+  ,"gb":0,"gbk":0
+  ,"eb":0,"ebk":0
+  ,"rb":9527,"wb":5006
+  ,"acc":[20,-664,15,-245,13,-114,12]
+  ,"fs":[1,16,17,18,19,15,4,5,6,7,8,9,10,11,12,13]
+  }
+ ,{"tb":32,"tbk":1
+  ,"tl":313
+  ,"mb":0,"mbk":0
+  ,"gb":0,"gbk":0
+  ,"eb":0,"ebk":0
+  ,"rb":32,"wb":32
+  ,"acc":[-32,2]
+  ,"fs":[20,21,4,5,6,7,8,9,10,11,12,13]
+  }
+ ,{"tb":152,"tbk":1
+  ,"tl":290
+  ,"mb":0,"mbk":0
+  ,"gb":0,"gbk":0
+  ,"eb":0,"ebk":0
+  ,"rb":24,"wb":16
+  ,"acc":[-8,3,-8,2,-136,0]
+  ,"fs":[22,23,24,25,4,5,6,7,8,9,10,11,12,13]
+  }
+ ,{"tb":32,"tbk":1
+  ,"tl":197
+  ,"mb":0,"mbk":0
+  ,"gb":0,"gbk":0
+  ,"eb":0,"ebk":0
+  ,"rb":0,"wb":32
+  ,"acc":[-32,1]
+  ,"fs":[20,26,25,4,5,6,7,8,9,10,11,12,13]
+  }
+ ,{"tb":5,"tbk":1
+  ,"tl":15315
+  ,"mb":0,"mbk":0
+  ,"gb":5,"gbk":1
+  ,"eb":0,"ebk":0
+  ,"rb":0,"wb":6
+  ,"acc":[2,-4,1]
+  ,"fs":[1,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,13]
+  }
+ ,{"tb":48,"tbk":1
+  ,"tl":15121
+  ,"mb":0,"mbk":0
+  ,"gb":48,"gbk":1
+  ,"eb":0,"ebk":0
+  ,"rb":56,"wb":60
+  ,"acc":[-16,4,-8,3,-8,2,-12,1,-4,0]
+  ,"fs":[1,43,44,45,46,47,48,49,50,51,52,53,54,55,56,13]
+  }
+ ,{"tb":32,"tbk":1
+  ,"tl":15029
+  ,"mb":0,"mbk":0
+  ,"gb":32,"gbk":1
+  ,"eb":0,"ebk":0
+  ,"rb":32,"wb":32
+  ,"acc":[-32,2]
+  ,"fs":[22,57,58,59,60,61,62,63,64,65,66,67,68,13]
+  }
+ ,{"tb":32000,"tbk":1
+  ,"tl":14062
+  ,"mb":32000,"mbk":1
+  ,"gb":32000,"gbk":1
+  ,"eb":0,"ebk":0
+  ,"rb":108,"wb":4108
+  ,"fs":[1,69,70,71,72,73,74,75,76,77,78,79,80,13]
+  }
+ ,{"tb":128,"tbk":1
+  ,"tl":13016
+  ,"mb":128,"mbk":1
+  ,"gb":128,"gbk":1
+  ,"eb":0,"ebk":0
+  ,"rb":1348,"wb":721
+  ,"acc":[-8,70,-8,4,-8,65,-4,56,12,-3,1,-8,7,-8,3,-8,10,-8,5,-8,9,-8,4,-8,11,-8,10,-8,18,-8,8,-8,2,15,-7,1]
+  ,"fs":[1,81,70,71,72,73,74,75,76,77,78,79,80,13]
+  }
+ ,{"tb":88,"tbk":1
+  ,"tl":12564
+  ,"mb":88,"mbk":1
+  ,"gb":88,"gbk":1
+  ,"eb":0,"ebk":0
+  ,"rb":392,"wb":192
+  ,"acc":[-8,10,-8,4,-8,9,-8,1,-8,8,-8,9,-8,2,-8,9,-8,19,-16,1]
+  ,"fs":[1,82,83,84,70,71,72,73,74,75,76,77,78,79,80,13]
+  }
+ ,{"tb":32,"tbk":1
+  ,"tl":12830
+  ,"mb":32,"mbk":1
+  ,"gb":32,"gbk":1
+  ,"eb":0,"ebk":0
+  ,"rb":240,"wb":40
+  ,"acc":[-8,18,-8,13,-8,4,-8,0]
+  ,"fs":[1,85,86,87,83,84,70,71,72,73,74,75,76,77,78,79,80,13]
+  }
+ ,{"tb":472,"tbk":1
+  ,"tl":12299
+  ,"mb":472,"mbk":1
+  ,"gb":472,"gbk":1
+  ,"eb":0,"ebk":0
+  ,"rb":621,"wb":1133
+  ,"acc":[-8,3,8,-2,5,-3,4,-2,1,-12,3,-4,2,-4,4,-4,3,6,4,-6,1,-16,3,-8,2,5,-3,4,-28,1,-144,3,-16,5,-16,3,-8,4,-4,11,-4,5,-4,7,-4,6,9,7,-6,4,-16,6,-8,4,-4,6,8,-2,7,4,-24,3,-8,4,-4,11,-4,5,-8,7,9,7,-6,4,-16,6,-8,4,-4,7,9,-2,8,5,-8,4,-16,3,-8,4,6,-7,1]
+  ,"fs":[1,88,89,83,84,70,71,72,73,74,75,76,77,78,79,80,13]
+  }
+ ,{"tb":16,"tbk":1
+  ,"tl":12012
+  ,"mb":16,"mbk":1
+  ,"gb":16,"gbk":1
+  ,"eb":0,"ebk":0
+  ,"rb":80,"wb":16
+  ,"acc":[-16,6]
+  ,"fs":[1,90,83,84,70,71,72,73,74,75,76,77,78,79,80,13]
+  }
+ ,{"tb":192,"tbk":6
+  ,"tl":7557
+  ,"mb":32,"mbk":1
+  ,"gb":32,"gbk":1
+  ,"eb":0,"ebk":0
+  ,"rb":288,"wb":288
+  ,"acc":[-16,24,-8,6,-8,18]
+  ,"fs":[1,91,92,84,70,71,72,73,74,75,76,77,78,79,80,13]
+  }
+ ,{"tb":1024,"tbk":1
+  ,"tl":12309
+  ,"mb":1024,"mbk":1
+  ,"gb":1024,"gbk":1
+  ,"eb":0,"ebk":0
+  ,"rb":70,"wb":62
+  ,"acc":[-5,10,12,-3,10,13,-3,7,-3,2,-1008,0]
+  ,"fs":[1,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,92,84,70,71,72,73,74,75,76,77,78,79,80]
+  }
+ ,{"tb":264,"tbk":3
+  ,"tl":2879
+  ,"mb":176,"mbk":2
+  ,"gb":176,"gbk":2
+  ,"eb":0,"ebk":0
+  ,"rb":600,"wb":432
+  ,"acc":[-8,30,-16,12,-8,6,-8,18,-8,21,-8,6,-8,12,-8,6,-16,3]
+  ,"fs":[1,82,117,84,70,71,72,73,74,75,76,77,78,79,80,13]
+  }
+ ,{"tb":16,"tbk":1
+  ,"tl":960
+  ,"mb":16,"mbk":1
+  ,"gb":16,"gbk":1
+  ,"eb":0,"ebk":0
+  ,"rb":18,"wb":17
+  ,"acc":[-8,3,4,-7,1]
+  ,"fs":[1,118,89,117,84,70,71,72,73,74,75,76,77,78,79,80,13]
+  }
+ ,{"tb":48,"tbk":3
+  ,"tl":2332
+  ,"mb":32,"mbk":2
+  ,"gb":32,"gbk":2
+  ,"eb":0,"ebk":0
+  ,"rb":144,"wb":48
+  ,"acc":[-16,12]
+  ,"fs":[1,90,117,84,70,71,72,73,74,75,76,77,78,79,80,13]
+  }
+ ,{"tb":16,"tbk":1
+  ,"tl":943
+  ,"mb":16,"mbk":1
+  ,"gb":16,"gbk":1
+  ,"eb":0,"ebk":0
+  ,"rb":22,"wb":17
+  ,"acc":[-8,3,-4,2,4,-3,1]
+  ,"fs":[1,119,89,117,84,70,71,72,73,74,75,76,77,78,79,80,13]
+  }
+ ,{"tb":16,"tbk":1
+  ,"tl":504
+  ,"mb":0,"mbk":0
+  ,"gb":0,"gbk":0
+  ,"eb":0,"ebk":0
+  ,"rb":18,"wb":17
+  ,"acc":[-8,3,4,-7,1]
+  ,"fs":[1,120,89,117,84,70,71,72,73,74,75,76,77,78,79,80,13]
+  }
+ ]
+,"ftbl":
+ ["[root]"
+ ,"0x4842888: malloc (in /usr/lib/valgrind/vgpreload_dhat-amd64-linux.so)"
+ ,"0x490D10F: ??? (in /usr/lib/libc.so.6)"
+ ,"0x4921C23: pthread_getattr_np (in /usr/lib/libc.so.6)"
+ ,"0x12C28B: get_stack_start (thread.rs:698)"
+ ,"0x12C28B: get_stack_start_aligned (thread.rs:715)"
+ ,"0x12C28B: init (thread.rs:747)"
+ ,"0x12C28B: init (rt.rs:99)"
+ ,"0x12C28B: {closure#1} (rt.rs:147)"
+ ,"0x12C28B: do_call<std::rt::lang_start_internal::{closure_env#1}, ()> (panicking.rs:492)"
+ ,"0x12C28B: try<(), std::rt::lang_start_internal::{closure_env#1}> (panicking.rs:456)"
+ ,"0x12C28B: catch_unwind<std::rt::lang_start_internal::{closure_env#1}, ()> (panic.rs:137)"
+ ,"0x12C28B: std::rt::lang_start_internal (rt.rs:147)"
+ ,"0x116007: main (in /home/unic0rn9k/Documents/metalmorphosis_small/target/release/examples/basic)"
+ ,"0x490DC13: getdelim (in /usr/lib/libc.so.6)"
+ ,"0x4921D54: pthread_getattr_np (in /usr/lib/libc.so.6)"
+ ,"0x490C7B0: _IO_file_doallocate (in /usr/lib/libc.so.6)"
+ ,"0x491A45F: _IO_doallocbuf (in /usr/lib/libc.so.6)"
+ ,"0x491957C: _IO_file_underflow (in /usr/lib/libc.so.6)"
+ ,"0x490DDE7: getdelim (in /usr/lib/libc.so.6)"
+ ,"0x4842798: malloc (in /usr/lib/valgrind/vgpreload_dhat-amd64-linux.so)"
+ ,"0x4921B2A: pthread_getattr_np (in /usr/lib/libc.so.6)"
+ ,"0x4847A73: calloc (in /usr/lib/valgrind/vgpreload_dhat-amd64-linux.so)"
+ ,"0x491E3B3: ??? (in /usr/lib/libc.so.6)"
+ ,"0x491E6CF: pthread_attr_setaffinity_np (in /usr/lib/libc.so.6)"
+ ,"0x4921B95: pthread_getattr_np (in /usr/lib/libc.so.6)"
+ ,"0x491E6E9: pthread_attr_setaffinity_np (in /usr/lib/libc.so.6)"
+ ,"0x14A43F: alloc (alloc.rs:177)"
+ ,"0x14A43F: alloc_impl (alloc.rs:177)"
+ ,"0x14A43F: allocate (alloc.rs:237)"
+ ,"0x14A43F: allocate_in<u8, alloc::alloc::Global> (raw_vec.rs:185)"
+ ,"0x14A43F: with_capacity_in<u8, alloc::alloc::Global> (c_str.rs:306)"
+ ,"0x14A43F: with_capacity_in<u8, alloc::alloc::Global> (mod.rs:641)"
+ ,"0x14A43F: with_capacity<u8> (mod.rs:483)"
+ ,"0x14A43F: spec_new_impl_bytes (c_str.rs:287)"
+ ,"0x14A43F: <&str as alloc::ffi::c_str::CString::new::SpecNewImpl>::spec_new_impl (c_str.rs:306)"
+ ,"0x12C339: new<&str> (c_str.rs:316)"
+ ,"0x12C339: init (rt.rs:104)"
+ ,"0x12C339: {closure#1} (rt.rs:147)"
+ ,"0x12C339: do_call<std::rt::lang_start_internal::{closure_env#1}, ()> (panicking.rs:492)"
+ ,"0x12C339: try<(), std::rt::lang_start_internal::{closure_env#1}> (panicking.rs:456)"
+ ,"0x12C339: catch_unwind<std::rt::lang_start_internal::{closure_env#1}, ()> (panic.rs:137)"
+ ,"0x12C339: std::rt::lang_start_internal (rt.rs:147)"
+ ,"0x12C369: alloc (alloc.rs:177)"
+ ,"0x12C369: alloc_impl (alloc.rs:177)"
+ ,"0x12C369: allocate (sync.rs:488)"
+ ,"0x12C369: {closure#0}<std::thread::Inner> (sync.rs:488)"
+ ,"0x12C369: try_allocate_for_layout<core::mem::maybe_uninit::MaybeUninit<std::thread::Inner>, alloc::sync::{impl#13}::new_uninit::{closure_env#0}<std::thread::Inner>, alloc::sync::{impl#13}::new_uninit::{closure_env#1}<std::thread::Inner>> (sync.rs:1176)"
+ ,"0x12C369: allocate_for_layout<core::mem::maybe_uninit::MaybeUninit<std::thread::Inner>, alloc::sync::{impl#13}::new_uninit::{closure_env#0}<std::thread::Inner>, alloc::sync::{impl#13}::new_uninit::{closure_env#1}<std::thread::Inner>> (sync.rs:1154)"
+ ,"0x12C369: new_uninit<std::thread::Inner> (sync.rs:486)"
+ ,"0x12C369: new (mod.rs:1156)"
+ ,"0x12C369: init (rt.rs:104)"
+ ,"0x12C369: {closure#1} (rt.rs:147)"
+ ,"0x12C369: do_call<std::rt::lang_start_internal::{closure_env#1}, ()> (panicking.rs:492)"
+ ,"0x12C369: try<(), std::rt::lang_start_internal::{closure_env#1}> (panicking.rs:456)"
+ ,"0x12C369: catch_unwind<std::rt::lang_start_internal::{closure_env#1}, ()> (panic.rs:137)"
+ ,"0x12C369: std::rt::lang_start_internal (rt.rs:147)"
+ ,"0x48D4A63: __cxa_thread_atexit_impl (in /usr/lib/libc.so.6)"
+ ,"0x131F4E: register_dtor<core::cell::RefCell<core::option::Option<std::sys_common::thread_info::ThreadInfo>>> (local.rs:955)"
+ ,"0x131F4E: __getit (local.rs:240)"
+ ,"0x131F4E: try_with<core::cell::RefCell<core::option::Option<std::sys_common::thread_info::ThreadInfo>>, std::sys_common::thread_info::set::{closure_env#0}, ()> (local.rs:444)"
+ ,"0x131F4E: with<core::cell::RefCell<core::option::Option<std::sys_common::thread_info::ThreadInfo>>, std::sys_common::thread_info::set::{closure_env#0}, ()> (local.rs:421)"
+ ,"0x131F4E: std::sys_common::thread_info::set (thread_info.rs:42)"
+ ,"0x12C3DB: init (rt.rs:105)"
+ ,"0x12C3DB: {closure#1} (rt.rs:147)"
+ ,"0x12C3DB: do_call<std::rt::lang_start_internal::{closure_env#1}, ()> (panicking.rs:492)"
+ ,"0x12C3DB: try<(), std::rt::lang_start_internal::{closure_env#1}> (panicking.rs:456)"
+ ,"0x12C3DB: catch_unwind<std::rt::lang_start_internal::{closure_env#1}, ()> (panic.rs:137)"
+ ,"0x12C3DB: std::rt::lang_start_internal (rt.rs:147)"
+ ,"0x115A3F: basic::main (in /home/unic0rn9k/Documents/metalmorphosis_small/target/release/examples/basic)"
+ ,"0x114BA2: std::sys_common::backtrace::__rust_begin_short_backtrace (in /home/unic0rn9k/Documents/metalmorphosis_small/target/release/examples/basic)"
+ ,"0x116018: std::rt::lang_start::{{closure}} (in /home/unic0rn9k/Documents/metalmorphosis_small/target/release/examples/basic)"
+ ,"0x12C3EE: call_once<(), (dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe)> (function.rs:280)"
+ ,"0x12C3EE: do_call<&(dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe), i32> (panicking.rs:492)"
+ ,"0x12C3EE: try<i32, &(dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe)> (panicking.rs:456)"
+ ,"0x12C3EE: catch_unwind<&(dyn core::ops::function::Fn<(), Output=i32> + core::marker::Sync + core::panic::unwind_safe::RefUnwindSafe), i32> (panic.rs:137)"
+ ,"0x12C3EE: {closure#2} (rt.rs:148)"
+ ,"0x12C3EE: do_call<std::rt::lang_start_internal::{closure_env#2}, isize> (panicking.rs:492)"
+ ,"0x12C3EE: try<isize, std::rt::lang_start_internal::{closure_env#2}> (panicking.rs:456)"
+ ,"0x12C3EE: catch_unwind<std::rt::lang_start_internal::{closure_env#2}, isize> (panic.rs:137)"
+ ,"0x12C3EE: std::rt::lang_start_internal (rt.rs:148)"
+ ,"0x115BD2: basic::main (in /home/unic0rn9k/Documents/metalmorphosis_small/target/release/examples/basic)"
+ ,"0x1135E8: metalmorphosis::executor::Executor<T>::branch (in /home/unic0rn9k/Documents/metalmorphosis_small/target/release/examples/basic)"
+ ,"0x113250: metalmorphosis::executor::Executor<T>::run (in /home/unic0rn9k/Documents/metalmorphosis_small/target/release/examples/basic)"
+ ,"0x115C45: basic::main (in /home/unic0rn9k/Documents/metalmorphosis_small/target/release/examples/basic)"
+ ,"0x1111AC: alloc::raw_vec::finish_grow (in /home/unic0rn9k/Documents/metalmorphosis_small/target/release/examples/basic)"
+ ,"0x11133F: alloc::raw_vec::RawVec<T,A>::reserve_for_push (in /home/unic0rn9k/Documents/metalmorphosis_small/target/release/examples/basic)"
+ ,"0x11362C: metalmorphosis::executor::Executor<T>::branch (in /home/unic0rn9k/Documents/metalmorphosis_small/target/release/examples/basic)"
+ ,"0x115D53: <basic::main::TestProgram as metalmorphosis::Program>::future (in /home/unic0rn9k/Documents/metalmorphosis_small/target/release/examples/basic)"
+ ,"0x11366C: metalmorphosis::executor::Executor<T>::branch (in /home/unic0rn9k/Documents/metalmorphosis_small/target/release/examples/basic)"
+ ,"0x11368B: metalmorphosis::executor::Executor<T>::branch (in /home/unic0rn9k/Documents/metalmorphosis_small/target/release/examples/basic)"
+ ,"0x1146C6: metalmorphosis::TaskNode<T>::poll (in /home/unic0rn9k/Documents/metalmorphosis_small/target/release/examples/basic)"
+ ,"0x11338D: metalmorphosis::executor::Executor<T>::run (in /home/unic0rn9k/Documents/metalmorphosis_small/target/release/examples/basic)"
+ ,"0x130D02: alloc (alloc.rs:177)"
+ ,"0x130D02: alloc_impl (alloc.rs:177)"
+ ,"0x130D02: allocate (alloc.rs:237)"
+ ,"0x130D02: allocate_in<u8, alloc::alloc::Global> (raw_vec.rs:185)"
+ ,"0x130D02: with_capacity_in<u8, alloc::alloc::Global> (bufwriter.rs:115)"
+ ,"0x130D02: with_capacity_in<u8, alloc::alloc::Global> (mod.rs:641)"
+ ,"0x130D02: with_capacity<u8> (mod.rs:483)"
+ ,"0x130D02: with_capacity<std::io::stdio::StdoutRaw> (bufwriter.rs:115)"
+ ,"0x130D02: with_capacity<std::io::stdio::StdoutRaw> (linewriter.rs:109)"
+ ,"0x130D02: new<std::io::stdio::StdoutRaw> (linewriter.rs:89)"
+ ,"0x130D02: {closure#0} (stdio.rs:606)"
+ ,"0x130D02: {closure#0}<std::sys_common::remutex::ReentrantMutex<core::cell::RefCell<std::io::buffered::linewriter::LineWriter<std::io::stdio::StdoutRaw>>>, std::io::stdio::stdout::{closure_env#0}> (once_lock.rs:170)"
+ ,"0x130D02: {closure#0}<std::sys_common::remutex::ReentrantMutex<core::cell::RefCell<std::io::buffered::linewriter::LineWriter<std::io::stdio::StdoutRaw>>>, std::sync::once_lock::{impl#0}::get_or_init::{closure_env#0}<std::sys_common::remutex::ReentrantMutex<core::cell::RefCell<std::io::buffered::linewriter::LineWriter<std::io::stdio::StdoutRaw>>>, std::io::stdio::stdout::{closure_env#0}>, !> (once_lock.rs:297)"
+ ,"0x130D02: std::sync::once::Once::call_once_force::{{closure}} (once.rs:334)"
+ ,"0x13123C: std::sync::once::Once::call_inner (once.rs:434)"
+ ,"0x1315CA: call_once_force<std::sync::once_lock::{impl#0}::initialize::{closure_env#0}<std::sys_common::remutex::ReentrantMutex<core::cell::RefCell<std::io::buffered::linewriter::LineWriter<std::io::stdio::StdoutRaw>>>, std::sync::once_lock::{impl#0}::get_or_init::{closure_env#0}<std::sys_common::remutex::ReentrantMutex<core::cell::RefCell<std::io::buffered::linewriter::LineWriter<std::io::stdio::StdoutRaw>>>, std::io::stdio::stdout::{closure_env#0}>, !>> (once.rs:334)"
+ ,"0x1315CA: std::sync::once_lock::OnceLock<T>::initialize (once_lock.rs:296)"
+ ,"0x12E2EE: get_or_try_init<std::sys_common::remutex::ReentrantMutex<core::cell::RefCell<std::io::buffered::linewriter::LineWriter<std::io::stdio::StdoutRaw>>>, std::sync::once_lock::{impl#0}::get_or_init::{closure_env#0}<std::sys_common::remutex::ReentrantMutex<core::cell::RefCell<std::io::buffered::linewriter::LineWriter<std::io::stdio::StdoutRaw>>>, std::io::stdio::stdout::{closure_env#0}>, !> (once_lock.rs:217)"
+ ,"0x12E2EE: get_or_init<std::sys_common::remutex::ReentrantMutex<core::cell::RefCell<std::io::buffered::linewriter::LineWriter<std::io::stdio::StdoutRaw>>>, std::io::stdio::stdout::{closure_env#0}> (once_lock.rs:170)"
+ ,"0x12E2EE: stdout (stdio.rs:605)"
+ ,"0x12E2EE: print_to<std::io::stdio::Stdout> (stdio.rs:1017)"
+ ,"0x12E2EE: std::io::stdio::_print (stdio.rs:1030)"
+ ,"0x1168A5: <core::future::from_generator::GenFuture<T> as core::future::future::Future>::poll (in /home/unic0rn9k/Documents/metalmorphosis_small/target/release/examples/basic)"
+ ,"0x114703: metalmorphosis::TaskNode<T>::poll (in /home/unic0rn9k/Documents/metalmorphosis_small/target/release/examples/basic)"
+ ,"0x11334E: metalmorphosis::executor::Executor<T>::run (in /home/unic0rn9k/Documents/metalmorphosis_small/target/release/examples/basic)"
+ ,"0x115E25: <basic::main::TestProgram as metalmorphosis::Program>::future (in /home/unic0rn9k/Documents/metalmorphosis_small/target/release/examples/basic)"
+ ,"0x115DA3: <basic::main::TestProgram as metalmorphosis::Program>::future (in /home/unic0rn9k/Documents/metalmorphosis_small/target/release/examples/basic)"
+ ,"0x115DE6: <basic::main::TestProgram as metalmorphosis::Program>::future (in /home/unic0rn9k/Documents/metalmorphosis_small/target/release/examples/basic)"
+ ]
+}
