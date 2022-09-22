@@ -11,9 +11,10 @@ impl<T: Program> Optimizer<T> {
         todo!()
     }
 
-    pub fn hint(&self, _: T) -> HintFromOptimizer {
+    #[inline(always)]
+    pub fn hint(&self, _: &T) -> HintFromOptimizer {
         HintFromOptimizer {
-            fast_and_unsafe_serialization: true,
+            fast_and_unsafe_serialization: false,
         }
     }
 
@@ -27,6 +28,11 @@ impl<T: Program> Optimizer<T> {
 #[derive(Clone, Copy)]
 pub struct HintFromOptimizer {
     pub fast_and_unsafe_serialization: bool,
+}
+
+#[derive(Clone, Copy)]
+pub struct HintToOptimizer {
+    pub output_is_copy: bool,
 }
 
 pub fn main_hint() -> HintFromOptimizer {

@@ -34,7 +34,6 @@ impl<T: Program> Executor<T> {
             // Poll
             if n == self.task_graph.len() {
                 n = 0;
-                println!("Ran out of nodes. Fetching new ones...");
                 let mut branch = self.queue.try_recv();
                 while branch.is_ok() {
                     self.branch(unsafe { branch.unwrap_unchecked() });
@@ -47,22 +46,11 @@ impl<T: Program> Executor<T> {
                 continue 'polling;
             }
 
-            println!(
-                "Polling node {:?} of {}",
-                self.task_graph[n].token,
-                self.task_graph.len()
-            );
             if unsafe { Arc::get_mut_unchecked(&mut self.task_graph[n]) }
                 .poll()
                 .is_ready()
             {
-                println!("Finished node {:?}", self.task_graph[n].token);
                 if self.task_graph[n].this_node == self.task_graph[n].parent {
-                    println!(
-                        "DONE! {} nodes left behind: {:?}",
-                        self.task_graph.len(),
-                        self.task_graph.iter().map(|n| n.token).collect::<Vec<_>>()
-                    );
                     self.task_graph.clear();
                     return Ok(());
                 } else {
@@ -74,7 +62,7 @@ impl<T: Program> Executor<T> {
                 }
             }
 
-            println!("  ... [{:?}]\n", self.task_graph[n].token);
+            println!(":---- {n}\n:");
 
             n += 1;
         }
@@ -99,7 +87,6 @@ impl<T: Program> Executor<T> {
             future: Box::new(UninitFuture),
             parent,
             this_node: self.task_graph.len(),
-            token,
             children: 0,
             optimizer: &self.optimizer as *const optimizer::Optimizer<T>,
             optimizer_hint,

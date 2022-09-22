@@ -5,8 +5,12 @@ fn basic() {
     use serde_derive::{Deserialize, Serialize};
     use std::future::{join, Future};
 
-    impl MorphicIO for u32 {}
-    impl MorphicIO for TestData {}
+    unsafe impl MorphicIO for u32 {
+        const IS_COPY: bool = true;
+    }
+    unsafe impl MorphicIO for TestData {
+        const IS_COPY: bool = true;
+    }
 
     #[derive(Debug, Serialize, Deserialize, PartialEq, Clone, Copy)]
     enum TestData {
@@ -29,7 +33,7 @@ fn basic() {
             use TestProgram::*;
             match self {
                 Main => Box::pin(async move {
-                    println!("::start");
+                    println!("::start\n:");
 
                     let a = task_handle.branch::<u32>(A);
                     let b = task_handle.branch::<u32>(B(2));
@@ -43,15 +47,13 @@ fn basic() {
 
                     println!("::end");
                 }),
-                A => Box::pin(async move {
-                    println!("::A");
-                    task_handle.write_output(1).unwrap();
-                }),
-                B(n) => Box::pin(async move {
-                    println!("::B");
-                    task_handle.write_output(n).unwrap();
-                }),
-                C => Box::pin(async move { task_handle.write_output(TestData::B).unwrap() }),
+
+                A => Box::pin(async move { unsafe { task_handle.write_output(1).unwrap() } }),
+                B(n) => Box::pin(async move { unsafe { task_handle.write_output(n).unwrap() } }),
+
+                C => Box::pin(
+                    async move { unsafe { task_handle.write_output(TestData::B).unwrap() } },
+                ),
             }
         }
     }
