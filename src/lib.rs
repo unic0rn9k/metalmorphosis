@@ -118,14 +118,24 @@ impl<T: Program> TaskNode<T> {
         })?)
     }
 
-    pub async fn branch<O: MorphicIO + Copy>(&self, token: T) -> Result<O, T> {
+    pub async fn branch<O: MorphicIO>(&self, token: T) -> Result<O, T> {
         // Branch is called before the executor is allowed to run,
         // therefore we need a way to figure out if data should be distributed (and more) here.
         // This is what i atempted to do with the Optimizer struct, which might implemented optimally.
         println!(":     +__");
         println!(":     |  [{:?}]", token);
         println!(":     |  ");
+
+        //let mut opt_hint = [0u8; 4];
+        //self.sender.send(Signal::GetOptHint(
+        //    self.this_node,
+        //    token,
+        //    opt_hint.as_mut_ptr(),
+        //))?;
+        //let opt_hint = optimization_hint().await;
+
         if O::IS_COPY {
+            //&& opt_hint.is_local() {
             self.branch_copy(token).await
         } else {
             self.branch_serialized(token).await
