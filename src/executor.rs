@@ -4,7 +4,6 @@ pub struct Executor<T: Program> {
     queue: Receiver<Signal<T>>,
     self_sender: SyncSender<Signal<T>>,
     task_graph: Vec<TaskNode<T>>,
-    optimizer: optimizer::Optimizer<T>,
 }
 
 impl<T: Program> Executor<T> {
@@ -15,18 +14,15 @@ impl<T: Program> Executor<T> {
             queue,
             self_sender,
             task_graph: vec![],
-            optimizer: optimizer::Optimizer::new(),
         }
     }
 
     pub fn run(&mut self, main: T) -> Result<(), T> {
+        #[allow(const_item_mutation)]
         self.branch(Signal::Branch {
             token: main,
             parent: 0,
-            output: OutputSlice {
-                fast_and_unsafe: &mut 0u8 as *mut u8,
-            },
-            optimizer_hint: optimizer::main_hint(),
+            output: buffer::NULL.alias(),
         });
         let mut n = 0;
 
@@ -71,7 +67,6 @@ impl<T: Program> Executor<T> {
             parent,
             output,
             token,
-            optimizer_hint,
         } = branch else{todo!()};
 
         match self.task_graph.get_mut(parent) {
@@ -86,8 +81,10 @@ impl<T: Program> Executor<T> {
             parent,
             this_node: self.task_graph.len(),
             children: 0,
-            optimizer: &self.optimizer as *const optimizer::Optimizer<T>,
-            optimizer_hint,
+            opt_hint: OptHint {
+                // Do we need to send data over network?
+                always_serialize: false,
+            },
         };
 
         self.task_graph.push(node);

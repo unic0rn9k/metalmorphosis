@@ -17,23 +17,24 @@ mod stupid_futures;
 use stupid_futures::*;
 mod error;
 use error::*;
-pub mod optimizer;
+pub mod buffer;
+//pub mod optimizer;
 mod primitives;
 
 pub type BasicFuture = Box<dyn Future<Output = ()> + Unpin>;
 
-pub union OutputSlice {
-    vec: *mut Vec<u8>,
-    fast_and_unsafe: *mut u8,
+#[derive(Clone, Copy, Debug)]
+pub struct OptHint {
+    pub always_serialize: bool,
 }
 
 pub enum Signal<T: Program> {
     Wake(usize),
+    GetOptHint(),
     Branch {
         token: T,
         parent: usize,
-        output: OutputSlice,
-        optimizer_hint: optimizer::HintFromOptimizer,
+        output: buffer::Alias,
     },
 }
 
@@ -50,13 +51,12 @@ impl<T: Program> Wake for SignalWaker<T> {
 
 pub struct TaskNode<T: Program> {
     sender: SyncSender<Signal<T>>,
-    output: OutputSlice,
+    output: buffer::Alias,
     future: BasicFuture,
     parent: usize,
     this_node: usize,
     children: usize,
-    optimizer: *const optimizer::Optimizer<T>,
-    optimizer_hint: optimizer::HintFromOptimizer,
+    opt_hint: OptHint,
 }
 
 impl<T: Program> TaskNode<T> {
@@ -66,60 +66,13 @@ impl<T: Program> TaskNode<T> {
     /// The function is not type checked, so it's up to you to make sure the type of the read data matches the written data.
     #[inline(always)]
     pub unsafe fn write_output<O: MorphicIO>(&self, o: O) -> Result<(), T> {
-        unsafe {
-            if O::IS_COPY {
-                std::ptr::write(self.output.fast_and_unsafe as *mut O, o)
-            } else {
-                *self.output.vec = bincode::serialize(&o)?
-            }
+        let buffer = self.output.attach_type();
+        if O::IS_COPY && !self.opt_hint.always_serialize {
+            buffer.set_data_format('r')
+        } else {
+            buffer.set_data_format('s')
         }
-        Ok(())
-    }
-
-    pub async fn branch_copy<O: MorphicIO>(&self, token: T) -> Result<O, T> {
-        unsafe {
-            let optimizer_hint = (*self.optimizer).hint(&token);
-            let parent = self.this_node;
-
-            let mut buffer = O::buffer();
-            let output = OutputSlice {
-                fast_and_unsafe: &mut buffer as *mut O as *mut u8,
-            };
-
-            self.sender.send(Signal::Branch {
-                token,
-                parent,
-                output,
-                optimizer_hint,
-            })?;
-
-            halt_once().await;
-
-            Ok(std::ptr::read(&buffer as *const O))
-        }
-    }
-
-    pub async fn branch_serialized<O: MorphicIO>(&self, token: T) -> Result<O, T> {
-        let optimizer_hint = (unsafe { &*self.optimizer }).hint(&token);
-        let parent = self.this_node;
-
-        let mut buffer = Vec::with_capacity(0);
-        let output = OutputSlice {
-            vec: &mut buffer as &mut Vec<u8>,
-        };
-
-        self.sender.send(Signal::Branch {
-            token,
-            parent,
-            output,
-            optimizer_hint,
-        })?;
-
-        halt_once().await;
-
-        Ok(bincode::deserialize(unsafe {
-            std::mem::transmute(&mut buffer[..])
-        })?)
+        Ok(buffer.write(o)?)
     }
 
     #[inline(always)]
@@ -140,14 +93,21 @@ impl<T: Program> TaskNode<T> {
         //    token,
         //    opt_hint.as_mut_ptr(),
         //))?;
-        //let opt_hint = optimization_hint().await;
+        //halt_once().await;
 
-        if O::IS_COPY {
-            //&& opt_hint.is_local() {
-            self.branch_copy(token).await
-        } else {
-            self.branch_serialized(token).await
-        }
+        let mut buffer = buffer::Source::uninit();
+        let output = buffer.alias();
+        let parent = self.this_node;
+
+        self.sender.send(Signal::Branch {
+            token,
+            parent,
+            output,
+        })?;
+
+        halt_once().await;
+
+        unsafe { buffer.read() }
     }
 
     pub fn poll(&mut self) -> Poll<()> {
