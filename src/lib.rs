@@ -1,27 +1,21 @@
-#![allow(incomplete_features)]
-#![feature(new_uninit)]
-#![feature(get_mut_unchecked)]
-#![feature(future_join)]
-#![feature(let_else)]
-#![feature(generic_const_exprs)]
+#![feature(new_uninit, future_join, let_else)]
 
 use serde::{Deserialize, Serialize};
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
-use std::sync::Arc;
-use std::task::{Context, Poll, Wake, Waker};
+use std::{
+    future::Future,
+    hint::unreachable_unchecked,
+    pin::Pin,
+    sync::{mpsc::SyncSender, Arc},
+    task::{Context, Poll, Wake, Waker},
+};
 
+pub mod error;
 mod executor;
-mod stupid_futures;
-use stupid_futures::*;
-mod error;
 use error::*;
-pub mod buffer;
-//pub mod optimizer;
+mod buffer;
 mod primitives;
 
-pub type BasicFuture = Box<dyn Future<Output = ()> + Unpin>;
+pub type BoxFuture = Box<dyn Future<Output = ()> + Unpin>;
 
 #[derive(Clone, Copy, Debug)]
 pub struct OptHint {
@@ -52,7 +46,7 @@ impl<T: Program> Wake for SignalWaker<T> {
 pub struct TaskNode<T: Program> {
     sender: SyncSender<Signal<T>>,
     output: buffer::Alias,
-    future: BasicFuture,
+    future: BoxFuture,
     parent: usize,
     this_node: usize,
     children: usize,
@@ -68,9 +62,9 @@ impl<T: Program> TaskNode<T> {
     pub unsafe fn write_output<O: MorphicIO>(&self, o: O) -> Result<(), T> {
         let buffer = self.output.attach_type();
         if O::IS_COPY && !self.opt_hint.always_serialize {
-            buffer.set_data_format('r')
+            buffer.set_data_format::<'r'>()
         } else {
-            buffer.set_data_format('s')
+            buffer.set_data_format::<'s'>()
         }
         Ok(buffer.write(o)?)
     }
@@ -80,21 +74,6 @@ impl<T: Program> TaskNode<T> {
         // Branch is called before the executor is allowed to run,
         // therefore we need a way to figure out if data should be distributed (and more) here.
         // This is what i atempted to do with the Optimizer struct, which might implemented optimally.
-        #[cfg(profile = "debug")]
-        {
-            println!(":     +__");
-            println!(":     |  [{:?}]", token);
-            println!(":     |  ");
-        }
-
-        //let mut opt_hint = [0u8; 4];
-        //self.sender.send(Signal::GetOptHint(
-        //    self.this_node,
-        //    token,
-        //    opt_hint.as_mut_ptr(),
-        //))?;
-        //halt_once().await;
-
         let mut buffer = buffer::Source::uninit();
         let output = buffer.alias();
         let parent = self.this_node;
@@ -105,7 +84,7 @@ impl<T: Program> TaskNode<T> {
             output,
         })?;
 
-        halt_once().await;
+        executor::halt_once().await;
 
         unsafe { buffer.read() }
     }
@@ -134,7 +113,11 @@ pub unsafe trait MorphicIO: Serialize + Deserialize<'static> + Send + Sync {
     /// As long as `IS_COPY` is set correctly, theres no problem.
     #[inline(always)]
     unsafe fn buffer() -> Self {
-        unsafe { std::mem::MaybeUninit::uninit().assume_init() }
+        if Self::IS_COPY {
+            unsafe { std::mem::MaybeUninit::uninit().assume_init() }
+        } else {
+            unreachable_unchecked()
+        }
     }
 }
 

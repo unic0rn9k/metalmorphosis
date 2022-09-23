@@ -1,10 +1,11 @@
 use crate::{MorphicIO, Program, Result};
-use std::intrinsics::transmute;
+use std::{any::type_name, intrinsics::transmute};
 
 pub enum Source<O> {
     Serialized(Vec<u8>),
     Raw(O),
     Uninitialized,
+    Const,
 }
 
 impl<O> Source<O> {
@@ -21,7 +22,7 @@ impl<O> Source<O> {
         match self {
             Serialized(v) => *v = bincode::serialize(&o)?,
             Raw(v) => std::ptr::write(v as *mut O, o),
-            Uninitialized => panic!("Cannot write to uninitialized buffer"),
+            _ => panic!("Cannot write to uninitialized or const buffer"),
         }
         Ok(())
     }
@@ -34,7 +35,7 @@ impl<O> Source<O> {
         Ok(match self {
             Raw(v) => std::ptr::read(v as *const O),
             Serialized(v) => bincode::deserialize(transmute(&v[..]))?,
-            Uninitialized => panic!("Cannot read from uninitialized buffer"),
+            _ => panic!("Cannot read from uninitialized or const buffer"),
         })
     }
 
@@ -43,16 +44,30 @@ impl<O> Source<O> {
         Self::Uninitialized
     }
 
-    pub unsafe fn set_data_format(&mut self, f: char)
+    fn fmt(&self) -> &'static str {
+        match self {
+            Source::Serialized(_) => "serialized",
+            Source::Raw(_) => "raw",
+            Source::Uninitialized => "uninitialized",
+            Source::Const => "const",
+        }
+    }
+
+    fn is_const(&self) -> bool {
+        match self {
+            Source::Const => true,
+            _ => false,
+        }
+    }
+
+    pub unsafe fn set_data_format<const FORMAT: char>(&mut self)
     where
         O: MorphicIO,
     {
-        match f {
-            'r' => *self = Self::Raw(O::buffer()),
-            's' => *self = Self::Serialized(vec![]),
-            _ => panic!(
-                "Please set the data format to either 's' for serialized data or 'r' for raw"
-            ),
+        match FORMAT {
+            'r' if O::IS_COPY && !self.is_const() => *self = Self::Raw(O::buffer()),
+            's' if !self.is_const() => *self = Self::Serialized(vec![]),
+            _ => panic!("Tried to set invalid data format. Tried to set a {} buffer, of type `{}`, to '{FORMAT}'", self.fmt(), type_name::<O>()),
         }
     }
 }
@@ -66,4 +81,4 @@ impl Alias {
     }
 }
 
-pub const NULL: Source<()> = Source::Uninitialized;
+pub const NULL: Source<()> = Source::Const;

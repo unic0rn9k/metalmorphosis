@@ -1,4 +1,9 @@
-use crate::*;
+use crate::{buffer, OptHint, Program, Result, Signal, TaskNode};
+use std::{
+    future::Future,
+    sync::mpsc::{sync_channel, Receiver, SyncSender},
+    task::Poll,
+};
 
 pub struct Executor<T: Program> {
     queue: Receiver<Signal<T>>,
@@ -55,9 +60,6 @@ impl<T: Program> Executor<T> {
                 }
             }
 
-            #[cfg(profile = "debug")]
-            println!(":---- {n}\n:");
-
             n += 1;
         }
     }
@@ -77,7 +79,7 @@ impl<T: Program> Executor<T> {
         let node = TaskNode {
             sender: self.self_sender.clone(),
             output,
-            future: Box::new(UninitFuture),
+            future: Box::new(halt_once()),
             parent,
             this_node: self.task_graph.len(),
             children: 0,
@@ -93,4 +95,28 @@ impl<T: Program> Executor<T> {
         let tmp = Box::new(token.future(unsafe { std::mem::transmute(&*node) }));
         node.future = tmp;
     }
+}
+
+pub struct HaltOnceWaker(bool);
+
+/// A future that always returns Poll::Ready()
+impl Future for HaltOnceWaker {
+    type Output = ();
+
+    #[inline(always)]
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        if self.0 {
+            Poll::Ready(())
+        } else {
+            self.as_mut().0 = true;
+            Poll::Pending
+        }
+    }
+}
+
+pub fn halt_once() -> HaltOnceWaker {
+    HaltOnceWaker(false)
 }
