@@ -67,7 +67,11 @@ impl<O> Source<O> {
         match FORMAT {
             'r' if O::IS_COPY && !self.is_const() => *self = Self::Raw(O::buffer()),
             's' if !self.is_const() => *self = Self::Serialized(vec![]),
-            _ => panic!("Tried to set invalid data format. Tried to set a {} buffer, of type `{}`, to '{FORMAT}'", self.fmt(), type_name::<O>()),
+            _ => panic!(
+                "Tried to set a {} buffer, of type `{}`, to '{FORMAT}'",
+                self.fmt(),
+                type_name::<O>()
+            ),
         }
     }
 }
