@@ -59,11 +59,13 @@ impl<T: Program> TaskNode<T> {
     /// # Safety
     /// The function is not type checked, so it's up to you to make sure the type of the read data matches the written data.
     #[inline(always)]
-    pub unsafe fn write_output<O: MorphicIO>(&self, o: O) -> Result<(), T> {
+    pub unsafe fn output<O: MorphicIO>(&self, o: O) -> Result<(), T> {
         let buffer = self.output.attach_type();
         if O::IS_COPY && !self.opt_hint.always_serialize {
+            // Raw data (just copy it)
             buffer.set_data_format::<'r'>()
         } else {
+            // Serialized data
             buffer.set_data_format::<'s'>()
         }
         Ok(buffer.write(o)?)
@@ -116,7 +118,7 @@ pub unsafe trait MorphicIO: Serialize + Deserialize<'static> + Send + Sync {
         if Self::IS_COPY {
             unsafe { std::mem::MaybeUninit::uninit().assume_init() }
         } else {
-            unreachable_unchecked()
+            panic!("Tried to create buffer for non-copy data")
         }
     }
 }

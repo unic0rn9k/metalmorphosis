@@ -45,12 +45,10 @@ fn main() {
                     println!("::end");
                 }),
 
-                A => Box::pin(async move { unsafe { task_handle.write_output(1).unwrap() } }),
-                B(n) => Box::pin(async move { unsafe { task_handle.write_output(n).unwrap() } }),
+                A => Box::pin(async move { unsafe { task_handle.output(1).unwrap() } }),
+                B(n) => Box::pin(async move { unsafe { task_handle.output(n).unwrap() } }),
 
-                C => Box::pin(
-                    async move { unsafe { task_handle.write_output(TestData::B).unwrap() } },
-                ),
+                C => Box::pin(async move { unsafe { task_handle.output(TestData::B).unwrap() } }),
             }
         }
     }
