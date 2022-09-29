@@ -1,11 +1,21 @@
 use metalmorphosis::{execute, Program};
 use std::{future::Future, pin::Pin};
 
+pub struct Symbol<const NAME: char>;
+
+impl<const A: char, const B: char> PartialEq<Symbol<B>> for Symbol<A> {
+    #[inline(always)]
+    fn eq(&self, _: &Symbol<B>) -> bool {
+        A == B
+    }
+}
+
 #[derive(Debug)]
 enum TestProgram {
     F(f32),
     G(f32),
     H(f32),
+    DF(f32, char),
 }
 
 impl Program for TestProgram {
@@ -21,9 +31,42 @@ impl Program for TestProgram {
             }),
             G(x) => Box::pin(async move { unsafe { cx.output(x * 4.).unwrap() } }),
             H(x) => Box::pin(async move { unsafe { cx.output(x.powi(3)).unwrap() } }),
+            DF(x, sym) => Box::pin(async move {
+                //if par ==   x  => g'(h(x)) * h'(x)
+                //if par == h(x) => h'(x)
+                //if par == g(x) => 1
+                let d: f32 = match sym {
+                    'x' => G(H(x)).derivative('x') * H(x).derivative('x'),
+                    'h' => H(x).derivative('x'),
+                    'g' => 1.,
+                    _ => panic!("Symbol {sym:?} not found"),
+                };
+            }),
         }
     }
 }
+
+/*
+program!{ TestProgram:
+    BlingBlong(x: f32) => {
+        let df = cx.branch::<f32>(F(x)).derivative(x).await.unwrap();
+    }
+
+    F(x: f32) => {
+        let h = cx.branch::<f32>(H(x)).await.unwrap();
+        let g = cx.branch::<f32>(G(h)).await.unwrap();
+        println!("f({x}) = {g}");
+    },
+
+    G(x: f32) => unsafe {
+         cx.output(x * 4.).unwrap()
+    },
+
+    H(x: f32) => unsafe {
+         cx.output(x.powi(3)).unwrap()
+    }
+}
+*/
 
 fn main() {
     execute(TestProgram::F(2.)).unwrap();

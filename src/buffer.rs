@@ -14,27 +14,27 @@ impl<O> Source<O> {
         Alias(self as *mut Source<O> as *mut ())
     }
 
-    pub unsafe fn write<T: Program>(&mut self, o: O) -> Result<(), T>
+    pub fn write<T: Program>(&mut self, o: O) -> Result<(), T>
     where
         O: MorphicIO,
     {
         use Source::*;
         match self {
             Serialized(v) => *v = bincode::serialize(&o)?,
-            Raw(v) => std::ptr::write(v as *mut O, o),
+            Raw(v) => *v = o,
             _ => panic!("Cannot write to uninitialized or const buffer"),
         }
         Ok(())
     }
 
-    pub unsafe fn read<T: Program>(&self) -> Result<O, T>
+    pub fn read<T: Program>(self) -> Result<O, T>
     where
         O: MorphicIO,
     {
         use Source::*;
         Ok(match self {
-            Raw(v) => std::ptr::read(v as *const O),
-            Serialized(v) => bincode::deserialize(transmute(&v[..]))?,
+            Raw(v) => v,
+            Serialized(v) => unsafe { bincode::deserialize(transmute(&v[..]))? },
             _ => panic!("Cannot read from uninitialized or const buffer"),
         })
     }

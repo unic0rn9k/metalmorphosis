@@ -1,9 +1,8 @@
-#![feature(new_uninit, future_join, let_else)]
+#![feature(new_uninit, future_join)]
 
 use serde::{Deserialize, Serialize};
 use std::{
     future::Future,
-    hint::unreachable_unchecked,
     pin::Pin,
     sync::{mpsc::SyncSender, Arc},
     task::{Context, Poll, Wake, Waker},
@@ -24,7 +23,6 @@ pub struct OptHint {
 
 pub enum Signal<T: Program> {
     Wake(usize),
-    GetOptHint(),
     Branch {
         token: T,
         parent: usize,
@@ -73,9 +71,6 @@ impl<T: Program> TaskNode<T> {
 
     #[inline(always)]
     pub async fn branch<O: MorphicIO>(&self, token: T) -> Result<O, T> {
-        // Branch is called before the executor is allowed to run,
-        // therefore we need a way to figure out if data should be distributed (and more) here.
-        // This is what i atempted to do with the Optimizer struct, which might implemented optimally.
         let mut buffer = buffer::Source::uninit();
         let output = buffer.alias();
         let parent = self.this_node;
@@ -88,7 +83,7 @@ impl<T: Program> TaskNode<T> {
 
         executor::halt_once().await;
 
-        unsafe { buffer.read() }
+        buffer.read()
     }
 
     pub fn poll(&mut self) -> Poll<()> {
