@@ -25,7 +25,7 @@ impl<T: Program> Executor<T> {
     pub fn run(&mut self, main: T) -> Result<(), T> {
         #[allow(const_item_mutation)]
         self.branch(Signal::Branch {
-            token: main,
+            program: main,
             parent: 0,
             output: buffer::NULL.alias(),
         });
@@ -67,7 +67,7 @@ impl<T: Program> Executor<T> {
         let Signal::Branch {
             parent,
             output,
-            token,
+            program,
         } = branch else{todo!()};
 
         match self.task_graph.get_mut(parent) {
@@ -91,7 +91,7 @@ impl<T: Program> Executor<T> {
         self.task_graph.push(node);
         let last = self.task_graph.len() - 1;
         let node = &mut self.task_graph[last];
-        let tmp = Box::new(token.future(unsafe { std::mem::transmute(&*node) }));
+        let tmp = Box::new(program.future(unsafe { std::mem::transmute(&*node) }));
         node.future = tmp;
     }
 }

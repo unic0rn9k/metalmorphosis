@@ -48,6 +48,8 @@ impl Program for TestProgram {
     }
 }
 
+// Devide and conquer!
+
 // id could maybe be replaced by some sort of Handle to AutoDiffNode, like Task node has.
 trait Differentiable: Program {
     fn derivative_future(self, in_respect_to_id: ()) -> Self::Future;

@@ -1,3 +1,9 @@
+//! # Weird place to have a todo list...
+//! - Maybe rename MorphicIO back to Distributed or distributable.
+//! - Think of a better name than "program". It's more like a node, or smth.
+//! - examples/math.rs (AutoDiff)
+//! - src/network.rs (distribute that bitch)
+
 #![feature(new_uninit, future_join)]
 
 use serde::{Deserialize, Serialize};
@@ -12,6 +18,7 @@ pub mod error;
 mod executor;
 use error::*;
 mod buffer;
+mod network;
 mod primitives;
 
 pub type BoxFuture = Box<dyn Future<Output = ()> + Unpin>;
@@ -24,7 +31,7 @@ pub struct OptHint {
 pub enum Signal<T: Program> {
     Wake(usize),
     Branch {
-        token: T,
+        program: T,
         parent: usize,
         output: buffer::Alias,
     },
@@ -70,13 +77,13 @@ impl<T: Program> TaskNode<T> {
     }
 
     #[inline(always)]
-    pub async fn branch<O: MorphicIO>(&self, token: T) -> Result<O, T> {
+    pub async fn branch<O: MorphicIO>(&self, program: T) -> Result<O, T> {
         let mut buffer = buffer::Source::uninit();
         let output = buffer.alias();
         let parent = self.this_node;
 
         self.sender.send(Signal::Branch {
-            token,
+            program,
             parent,
             output,
         })?;
@@ -99,10 +106,6 @@ impl<T: Program> TaskNode<T> {
 /// Make sure `IS_COPY` is only true for types that implement copy.
 pub unsafe trait MorphicIO: Serialize + Deserialize<'static> + Send + Sync {
     const IS_COPY: bool = false;
-    //const SIZE: usize;
-    //fn local_serialize(self, buffer: &mut [u8]);
-    //fn local_deserialize(self, buffer: &[u8]);
-
     /// DON'T OVERWRITE THIS FUNCTION.
     /// Returns a buffer that can fit Self, for use internally.
     ///
