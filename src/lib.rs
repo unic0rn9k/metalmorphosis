@@ -60,7 +60,7 @@ impl<T: Program> TaskNode<T> {
     pub unsafe fn output<O: MorphicIO>(&self, o: O) -> Result<(), T> {
         let buffer = self.output.attach_type();
         if O::IS_COPY && !self.opt_hint.always_serialize {
-            // Raw data (just copy it)
+            // Raw data (just move it)
             buffer.set_data_format::<'r'>()
         } else {
             // Serialized data

@@ -32,7 +32,6 @@ impl<T: Program> Executor<T> {
         let mut n = 0;
 
         'polling: loop {
-            // Poll
             if n == self.task_graph.len() {
                 n = 0;
                 let mut branch = self.queue.try_recv();
@@ -97,9 +96,9 @@ impl<T: Program> Executor<T> {
     }
 }
 
+/// A future that returns Pending once, and then Ready. This let's the executor do its thing.
 pub struct HaltOnceWaker(bool);
 
-/// A future that always returns Poll::Ready()
 impl Future for HaltOnceWaker {
     type Output = ();
 

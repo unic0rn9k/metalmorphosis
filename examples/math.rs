@@ -21,6 +21,8 @@ enum TestProgram {
 impl Program for TestProgram {
     type Future = Pin<Box<dyn Future<Output = ()>>>;
 
+    // Is it ok to have concurrent imutable access to cx?
+    // For sure need to make a wrapper struct.
     fn future(self, cx: &'static metalmorphosis::TaskNode<Self>) -> Self::Future {
         use TestProgram::*;
         match self {
@@ -43,6 +45,32 @@ impl Program for TestProgram {
                 };
             }),
         }
+    }
+}
+
+// id could maybe be replaced by some sort of Handle to AutoDiffNode, like Task node has.
+trait Differentiable: Program {
+    fn derivative_future(self, in_respect_to_id: ()) -> Self::Future;
+
+    fn derivative(self) -> AutoDiffNode<Self> {
+        AutoDiffNode {
+            id: (),
+            program: self,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct AutoDiffNode<T: Differentiable> {
+    id: (),
+    program: T,
+}
+
+impl<T: Differentiable> Program for AutoDiffNode<T> {
+    type Future = T::Future;
+
+    fn future(self, task_handle: &'static metalmorphosis::TaskNode<Self>) -> Self::Future {
+        todo!()
     }
 }
 
