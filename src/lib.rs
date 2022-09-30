@@ -3,6 +3,7 @@
 //! - Think of a better name than "program". It's more like a node, or smth.
 //! - examples/math.rs (AutoDiff)
 //! - src/network.rs (distribute that bitch)
+//! - I removed wakers again
 
 #![feature(new_uninit, future_join)]
 
@@ -14,6 +15,7 @@ use std::{
     task::{Context, Poll, Wake, Waker},
 };
 
+pub mod autodiff;
 pub mod error;
 mod executor;
 use error::*;
@@ -21,7 +23,7 @@ mod buffer;
 mod network;
 mod primitives;
 
-pub type BoxFuture = Box<dyn Future<Output = ()> + Unpin>;
+pub type BoxFuture = Pin<Box<dyn Future<Output = ()> + Unpin>>;
 
 #[derive(Clone, Copy, Debug)]
 pub struct OptHint {
@@ -58,7 +60,19 @@ pub struct TaskNode<T: Program> {
     opt_hint: OptHint,
 }
 
+struct NullWaker;
+
+impl Wake for NullWaker {
+    fn wake(self: Arc<Self>) {
+        unreachable!()
+    }
+}
+
 impl<T: Program> TaskNode<T> {
+    pub fn poll(&mut self) -> Poll<()> {
+        Pin::new(&mut self.future).poll(&mut Context::from_waker(&Waker::from(Arc::new(NullWaker))))
+    }
+
     /// Return data from task to parent.
     ///
     /// # Safety
@@ -77,13 +91,13 @@ impl<T: Program> TaskNode<T> {
     }
 
     #[inline(always)]
-    pub async fn branch<O: MorphicIO>(&self, program: T) -> Result<O, T> {
+    pub async fn branch<O: MorphicIO>(&self, program: impl Into<T>) -> Result<O, T> {
         let mut buffer = buffer::Source::uninit();
         let output = buffer.alias();
         let parent = self.this_node;
 
         self.sender.send(Signal::Branch {
-            program,
+            program: program.into(),
             parent,
             output,
         })?;
@@ -93,10 +107,9 @@ impl<T: Program> TaskNode<T> {
         buffer.read()
     }
 
-    pub fn poll(&mut self) -> Poll<()> {
-        Pin::new(&mut self.future).poll(&mut Context::from_waker(&Waker::from(Arc::new(
-            SignalWaker(self.this_node, self.sender.clone()),
-        ))))
+    #[inline(always)]
+    pub fn node_id(&self) -> usize {
+        self.this_node
     }
 }
 
@@ -121,12 +134,18 @@ pub unsafe trait MorphicIO: Serialize + Deserialize<'static> + Send + Sync {
     }
 }
 
-pub trait Program: std::fmt::Debug + Send + Sync + Sized + 'static {
-    type Future: Future<Output = ()> + Unpin + 'static;
-    fn future(self, task_handle: &'static TaskNode<Self>) -> Self::Future;
+pub trait Program: std::fmt::Debug + Send + Sync + Sized {
+    fn future<T: Program + From<Self>>(self, task_handle: &TaskNode<T>) -> BoxFuture;
 }
 
 #[inline(always)]
 pub fn execute<T: Program>(program: T) -> Result<(), T> {
     executor::Executor::new().run(program)
+}
+
+#[macro_export]
+macro_rules! _async {
+    ($f: expr) => {
+        Box::pin(async move { $f })
+    };
 }

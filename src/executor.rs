@@ -78,7 +78,7 @@ impl<T: Program> Executor<T> {
         let node = TaskNode {
             sender: self.self_sender.clone(),
             output,
-            future: Box::new(halt_once()),
+            future: Box::pin(halt_once()),
             parent,
             this_node: self.task_graph.len(),
             children: 0,
@@ -90,9 +90,8 @@ impl<T: Program> Executor<T> {
 
         self.task_graph.push(node);
         let last = self.task_graph.len() - 1;
-        let node = &mut self.task_graph[last];
-        let tmp = Box::new(program.future(unsafe { std::mem::transmute(&*node) }));
-        node.future = tmp;
+        let tmp = program.future::<T>(&self.task_graph[last]);
+        self.task_graph[last].future = tmp;
     }
 }
 

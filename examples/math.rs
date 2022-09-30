@@ -1,4 +1,5 @@
-use metalmorphosis::{execute, Program};
+use levitate::Float;
+use metalmorphosis::{Program, TaskNode, _async, execute};
 use std::{future::Future, pin::Pin};
 
 pub struct Symbol<const NAME: char>;
@@ -18,6 +19,7 @@ enum TestProgram {
     DF(f32, char),
 }
 
+/*
 impl Program for TestProgram {
     type Future = Pin<Box<dyn Future<Output = ()>>>;
 
@@ -31,8 +33,8 @@ impl Program for TestProgram {
                 let g = cx.branch::<f32>(G(h)).await.unwrap();
                 println!("f({x}) = {g}");
             }),
-            G(x) => Box::pin(async move { unsafe { cx.output(x * 4.).unwrap() } }),
-            H(x) => Box::pin(async move { unsafe { cx.output(x.powi(3)).unwrap() } }),
+            G(x) => _async! { unsafe { cx.output(x * 4.).unwrap() } },
+            H(x) => _async! { unsafe { cx.output(x.powi(3)).unwrap() } },
             DF(x, sym) => Box::pin(async move {
                 //if par ==   x  => g'(h(x)) * h'(x)
                 //if par == h(x) => h'(x)
@@ -47,92 +49,8 @@ impl Program for TestProgram {
         }
     }
 }
-
-// Devide and conquer!
-
-// id could maybe be replaced by some sort of Handle to AutoDiffNode, like Task node has.
-trait Differentiable: Program {
-    fn derivative_future(self, in_respect_to_id: ()) -> Self::Future;
-
-    fn derivative(self) -> AutoDiffNode<Self> {
-        AutoDiffNode {
-            id: (),
-            program: self,
-        }
-    }
-}
-
-#[derive(Debug)]
-struct AutoDiffNode<T: Differentiable> {
-    id: (),
-    program: T,
-}
-
-impl<T: Differentiable> Program for AutoDiffNode<T> {
-    type Future = T::Future;
-
-    fn future(self, task_handle: &'static metalmorphosis::TaskNode<Self>) -> Self::Future {
-        todo!()
-    }
-}
-
-/*
-program!{ TestProgram:
-    BlingBlong(x: f32) => {
-        let df = cx.branch::<f32>(F(x)).derivative(x).await.unwrap();
-    }
-
-    F(x: f32) => {
-        let h = cx.branch::<f32>(H(x)).await.unwrap();
-        let g = cx.branch::<f32>(G(h)).await.unwrap();
-        println!("f({x}) = {g}");
-    },
-
-    G(x: f32) => unsafe {
-         cx.output(x * 4.).unwrap()
-    },
-
-    H(x: f32) => unsafe {
-         cx.output(x.powi(3)).unwrap()
-    }
-}
 */
 
 fn main() {
-    execute(TestProgram::F(2.)).unwrap();
+    //execute(TestProgram::F(2.)).unwrap();
 }
-
-// # Chain rule specs
-//
-// y.derivative(x) = dy/dx
-//
-//  *(a, b) = a * b
-//  *(a, b).derivative(a) = b
-//  *(a, b).derivative(b) = a
-//
-//  +(a, b) = a + b
-//  +(a, b).derivative() = 1
-//
-//  inv(a) = 1 / a
-//  inv(a).derivative() = -1 / x^2
-//
-//  f(g(x)) => f'(g(x)) * g'(x)
-//
-//  var(x) = x
-//  var(x).derivative(x) = 1
-//  var(x).derivative(!x) = x
-//
-//  f(g(x), h(x)) => f'(g(x)) * g'(x) + f'(h(x)) * h'(x)
-//
-//  f(g(x), h(x)) => f(g(x)).derivative(g) * g(x).derivative(x)
-//                   + f(h(x)).derivative(h) * h(x).derivative(x)
-//
-//  (a+b)*b*c => 1*b*c + (a+b) * c
-//
-// ## How to reference nodes in program
-//
-// TaskNode::branch should return a future that can contain an index
-// to the nodes position in the task graph.
-//
-// It can then be passed to the children,
-// and they can do stuff like calculate derivatives in respect to that node.

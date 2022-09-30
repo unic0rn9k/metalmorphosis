@@ -28,7 +28,10 @@ fn main() {
     impl Program for TestProgram {
         type Future = Pin<Box<dyn Future<Output = ()>>>;
 
-        fn future(self, task_handle: &'static TaskNode<Self>) -> Self::Future {
+        fn future<T: Program + From<Self>>(
+            self,
+            task_handle: &'static TaskNode<T>,
+        ) -> Self::Future {
             use TestProgram::*;
             match self {
                 Main => Box::pin(async move {
