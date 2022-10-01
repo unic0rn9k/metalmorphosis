@@ -86,7 +86,7 @@ impl<'a, T: Program<'a>> TaskNode<'a, T> {
     /// # Safety
     /// The function is not type checked, so it's up to you to make sure the type of the read data matches the written data.
     #[inline(always)]
-    pub unsafe fn output<O: MorphicIO + 'a>(&'a self, o: O) -> Result<'a, (), T> {
+    pub unsafe fn output<O: MorphicIO<'a>>(&'a self, o: O) -> Result<'a, (), T> {
         let buffer = self.output.attach_type();
         if O::IS_COPY && !self.opt_hint.always_serialize {
             // Raw data (just move it)
@@ -102,7 +102,7 @@ impl<'a, T: Program<'a>> TaskNode<'a, T> {
     // that also describe edges,
     // that way we can just append a whole existing graph at once.
     #[inline(always)]
-    pub async fn branch<O: MorphicIO + 'a>(&'a self, program: impl Into<T>) -> Result<O, T> {
+    pub async fn branch<O: MorphicIO<'a>>(&'a self, program: impl Into<T>) -> Result<O, T> {
         // This is actually also unsafe, if the child doesn't write any data, and the parent tries to read it.
         let mut buffer = buffer::Source::uninit();
         let output = buffer.alias();
@@ -132,7 +132,7 @@ impl<'a, T: Program<'a>> TaskNode<'a, T> {
 ///
 /// # Safety
 /// Make sure `IS_COPY` is only true for types that implement copy.
-pub unsafe trait MorphicIO: Serialize + Deserialize<'static> + Send + Sync {
+pub unsafe trait MorphicIO<'a>: 'a + Serialize + Deserialize<'a> + Send + Sync {
     // Think this while copy thing might be redundant, now that buffer is more safe.
     // Still defs are some safety concerns to concider.
     const IS_COPY: bool = false;

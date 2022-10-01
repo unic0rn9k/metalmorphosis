@@ -16,7 +16,7 @@ impl<'a, O> Source<'a, O> {
 
     pub fn write<T: Program<'a>>(&mut self, o: O) -> Result<'a, (), T>
     where
-        O: MorphicIO,
+        O: MorphicIO<'a>,
     {
         use Source::*;
         match self {
@@ -29,7 +29,7 @@ impl<'a, O> Source<'a, O> {
 
     pub fn read<T: Program<'a>>(self) -> Result<'a, O, T>
     where
-        O: MorphicIO,
+        O: MorphicIO<'a>,
     {
         use Source::*;
         Ok(match self {
@@ -62,7 +62,7 @@ impl<'a, O> Source<'a, O> {
 
     pub unsafe fn set_data_format<const FORMAT: char>(&mut self)
     where
-        O: MorphicIO,
+        O: MorphicIO<'a>,
     {
         match FORMAT {
             'r' if O::IS_COPY && !self.is_const() => *self = Self::Raw(O::buffer()),
@@ -80,7 +80,7 @@ pub struct Alias<'a>(*mut (), PhantomData<&'a ()>);
 
 impl<'a> Alias<'a> {
     #[inline(always)]
-    pub unsafe fn attach_type<O: MorphicIO>(&self) -> &'a mut Source<O> {
+    pub unsafe fn attach_type<O: MorphicIO<'a>>(&self) -> &'a mut Source<O> {
         unsafe { transmute(self.0) }
     }
 }
