@@ -99,9 +99,8 @@ impl<'a, T: Program<'a>> TaskNode<'a, T> {
     }
 
     // Should be able to take an iterater of programs,
-    // so we can puch multiple programs at once,
-    // that maybe in combination describes a graph,
-    // that just gets appended to the existing task_graph.
+    // that also describe edges,
+    // that way we can just append a whole existing graph at once.
     #[inline(always)]
     pub async fn branch<O: MorphicIO + 'a>(&'a self, program: impl Into<T>) -> Result<O, T> {
         // This is actually also unsafe, if the child doesn't write any data, and the parent tries to read it.
