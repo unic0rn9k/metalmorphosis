@@ -1,5 +1,5 @@
-#![feature(future_join)]
-use std::pin::Pin;
+#![feature(future_join, pin_macro)]
+use std::pin::{pin, Pin};
 
 use metalmorphosis::*;
 
@@ -26,33 +26,30 @@ fn main() {
     }
 
     impl Program for TestProgram {
-        type Future = Pin<Box<dyn Future<Output = ()>>>;
-
-        fn future<T: Program + From<Self>>(
-            self,
-            task_handle: &'static TaskNode<T>,
-        ) -> Self::Future {
+        fn future<T: Program + From<Self>>(self, task_handle: &TaskNode<T>) -> Work {
             use TestProgram::*;
-            match self {
-                Main => Box::pin(async move {
-                    println!("::start\n:");
+            work(async move {
+                match self {
+                    Main => {
+                        println!("::start\n:");
 
-                    let a = task_handle.branch::<u32>(A);
-                    let b = task_handle.branch::<u32>(B(2));
-                    let c = task_handle.branch::<TestData>(C);
-                    let (a, b) = join!(a, b).await;
+                        let a = task_handle.branch::<u32>(A);
+                        let b = task_handle.branch::<u32>(B(2));
+                        let c = task_handle.branch::<TestData>(C);
+                        let (a, b) = join!(a, b).await;
 
-                    assert_eq!(a.unwrap() + b.unwrap(), 3);
-                    assert_eq!(c.await.unwrap(), TestData::B);
+                        assert_eq!(a.unwrap() + b.unwrap(), 3);
+                        assert_eq!(c.await.unwrap(), TestData::B);
 
-                    println!("::end");
-                }),
+                        println!("::end");
+                    }
 
-                A => Box::pin(async move { unsafe { task_handle.output(1).unwrap() } }),
-                B(n) => Box::pin(async move { unsafe { task_handle.output(n).unwrap() } }),
+                    A => unsafe { task_handle.output(1).unwrap() },
+                    B(n) => unsafe { task_handle.output(n).unwrap() },
 
-                C => Box::pin(async move { unsafe { task_handle.output(TestData::B).unwrap() } }),
-            }
+                    C => unsafe { task_handle.output(TestData::B).unwrap() },
+                }
+            })
         }
     }
 

@@ -1,4 +1,4 @@
-use crate::{buffer, OptHint, Program, Result, Signal, TaskNode};
+use crate::{buffer, OptHint, Program, Result, Signal, TaskNode, Work};
 use std::{
     future::Future,
     sync::mpsc::{sync_channel, Receiver, SyncSender},
@@ -90,8 +90,9 @@ impl<T: Program> Executor<T> {
 
         self.task_graph.push(node);
         let last = self.task_graph.len() - 1;
-        let tmp = program.future::<T>(&self.task_graph[last]);
-        self.task_graph[last].future = tmp;
+        self.task_graph[last].future = program
+            .future::<T>(&self.task_graph[last])
+            .extremely_unsafe_type_conversion();
     }
 }
 

@@ -5,11 +5,12 @@
 //! - src/network.rs (distribute that bitch)
 //! - I removed wakers again
 
-#![feature(new_uninit, future_join)]
+#![feature(new_uninit, future_join, return_position_impl_trait_in_trait)]
 
 use serde::{Deserialize, Serialize};
 use std::{
     future::Future,
+    intrinsics::transmute,
     pin::Pin,
     sync::{mpsc::SyncSender, Arc},
     task::{Context, Poll, Wake, Waker},
@@ -90,6 +91,10 @@ impl<T: Program> TaskNode<T> {
         Ok(buffer.write(o)?)
     }
 
+    // Should be able to take an iterater of programs,
+    // so we can puch multiple programs at once,
+    // that maybe in combination describes a graph,
+    // that just gets appended to the existing task_graph.
     #[inline(always)]
     pub async fn branch<O: MorphicIO>(&self, program: impl Into<T>) -> Result<O, T> {
         let mut buffer = buffer::Source::uninit();
@@ -134,8 +139,16 @@ pub unsafe trait MorphicIO: Serialize + Deserialize<'static> + Send + Sync {
     }
 }
 
+pub struct Work<'a>(Box<dyn Future<Output = ()> + 'a>);
+
+impl<'a> Work<'a> {
+    fn extremely_unsafe_type_conversion(self) -> BoxFuture {
+        unsafe { std::mem::transmute(self.0) }
+    }
+}
+
 pub trait Program: std::fmt::Debug + Send + Sync + Sized {
-    fn future<T: Program + From<Self>>(self, task_handle: &TaskNode<T>) -> BoxFuture;
+    fn future<T: Program + From<Self>>(self, task_handle: &TaskNode<T>) -> Work;
 }
 
 #[inline(always)]
@@ -143,9 +156,7 @@ pub fn execute<T: Program>(program: T) -> Result<(), T> {
     executor::Executor::new().run(program)
 }
 
-#[macro_export]
-macro_rules! _async {
-    ($f: expr) => {
-        Box::pin(async move { $f })
-    };
+#[inline(always)]
+pub fn work<'a>(f: impl Future<Output = ()> + 'a) -> Work<'a> {
+    Work(Box::new(f))
 }

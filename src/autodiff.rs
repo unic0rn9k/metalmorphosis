@@ -32,13 +32,10 @@
 //!
 //! It can then be passed to the children,
 //! and they can do stuff like calculate derivatives in respect to that node.
-//!
-//!
-//! # Devide and conquer!
 
-use std::future::Future;
+use std::{future::Future, marker::PhantomData, ops::Mul};
 
-use crate::{BoxFuture, Program, TaskNode, _async};
+use crate::{work, BoxFuture, Program, TaskNode, Work};
 
 trait Differentiable: Sized + std::fmt::Debug + Send + Sync {
     fn forward_future<T: Program + From<Self>>(self, task_handle: &TaskNode<T>) -> BoxFuture;
@@ -83,13 +80,33 @@ impl<'a, D: Differentiable> Differentiable for Node<'a, D> {
 }
 
 impl<'a, T: Differentiable> Program for Node<'a, T> {
-    fn future<U: Program + From<Self>>(self, task_handle: &TaskNode<U>) -> BoxFuture {
-        self.forward_future(task_handle)
+    fn future<U: Program + From<Self>>(self, task_handle: &TaskNode<U>) -> Work {
+        work(self.forward_future(task_handle))
     }
 }
 
 impl<T: Differentiable> Program for Derivative<T> {
-    fn future<U: Program + From<Self>>(self, task_handle: &TaskNode<U>) -> BoxFuture {
-        self.0.derivative_future(self.1, task_handle)
+    fn future<U: Program + From<Self>>(self, task_handle: &TaskNode<U>) -> Work {
+        work(self.0.derivative_future(self.1, task_handle))
     }
 }
+
+struct MulNode<LHS: Mul<RHS, Output = O>, RHS, O>(
+    PhantomData<LHS>,
+    PhantomData<RHS>,
+    PhantomData<O>,
+);
+
+impl<LHS: Mul<RHS, Output = O>, RHS, O> MulNode<LHS, RHS, O> {
+    fn mul(lhs: LHS, rhs: RHS, o: &mut O) {
+        *o = lhs * rhs
+    }
+}
+
+// # Devide and conquer!
+//
+// Build type safe graph with ops (eg: +-*/)
+//
+// Stram type graph as iter of Program, with information about edges, to the executor
+//
+// Run the whole damn thing
