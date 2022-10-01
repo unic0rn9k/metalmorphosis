@@ -1,20 +1,20 @@
 use crate::{MorphicIO, Program, Result};
-use std::{any::type_name, intrinsics::transmute};
+use std::{any::type_name, intrinsics::transmute, marker::PhantomData};
 
-pub enum Source<O> {
+pub enum Source<'a, O> {
     Serialized(Vec<u8>),
     Raw(O),
-    Uninitialized,
+    Uninitialized(PhantomData<&'a O>),
     Const,
 }
 
-impl<O> Source<O> {
+impl<'a, O> Source<'a, O> {
     #[inline(always)]
-    pub fn alias(&mut self) -> Alias {
-        Alias(self as *mut Source<O> as *mut ())
+    pub fn alias(&mut self) -> Alias<'a> {
+        Alias(self as *mut Source<O> as *mut (), PhantomData)
     }
 
-    pub fn write<T: Program>(&mut self, o: O) -> Result<(), T>
+    pub fn write<T: Program<'a>>(&mut self, o: O) -> Result<'a, (), T>
     where
         O: MorphicIO,
     {
@@ -27,7 +27,7 @@ impl<O> Source<O> {
         Ok(())
     }
 
-    pub fn read<T: Program>(self) -> Result<O, T>
+    pub fn read<T: Program<'a>>(self) -> Result<'a, O, T>
     where
         O: MorphicIO,
     {
@@ -41,14 +41,14 @@ impl<O> Source<O> {
 
     #[inline(always)]
     pub fn uninit() -> Self {
-        Self::Uninitialized
+        Self::Uninitialized(PhantomData)
     }
 
     fn fmt(&self) -> &'static str {
         match self {
             Source::Serialized(_) => "serialized",
             Source::Raw(_) => "raw",
-            Source::Uninitialized => "uninitialized",
+            Source::Uninitialized(_) => "uninitialized",
             Source::Const => "const",
         }
     }
@@ -76,11 +76,11 @@ impl<O> Source<O> {
     }
 }
 
-pub struct Alias(*mut ());
+pub struct Alias<'a>(*mut (), PhantomData<&'a ()>);
 
-impl Alias {
+impl<'a> Alias<'a> {
     #[inline(always)]
-    pub unsafe fn attach_type<'a, O: MorphicIO>(&self) -> &'a mut Source<O> {
+    pub unsafe fn attach_type<O: MorphicIO>(&self) -> &'a mut Source<O> {
         unsafe { transmute(self.0) }
     }
 }

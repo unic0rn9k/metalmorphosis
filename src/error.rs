@@ -3,9 +3,9 @@ use std::sync::mpsc::{SendError, TryRecvError};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum Error<T: Program> {
+pub enum Error<'a, T: Program<'a>> {
     #[error("Error sending data to local executor `{0}`")]
-    SendError(SendError<Signal<T>>),
+    SendError(SendError<Signal<'a, T>>),
 
     #[error(transparent)]
     BincodeError(#[from] bincode::Error),
@@ -14,10 +14,10 @@ pub enum Error<T: Program> {
     ReceiveError(#[from] TryRecvError),
 }
 
-impl<T: Program> From<SendError<Signal<T>>> for Error<T> {
-    fn from(v: SendError<Signal<T>>) -> Self {
+impl<'a, T: Program<'a>> From<SendError<Signal<'a, T>>> for Error<'a, T> {
+    fn from(v: SendError<Signal<'a, T>>) -> Self {
         Self::SendError(v)
     }
 }
 
-pub type Result<T, P> = std::result::Result<T, Error<P>>;
+pub type Result<'a, T, P> = std::result::Result<T, Error<'a, P>>;

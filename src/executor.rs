@@ -1,17 +1,17 @@
-use crate::{buffer, OptHint, Program, Result, Signal, TaskNode, Work};
+use crate::{buffer, OptHint, Program, Result, Signal, TaskNode};
 use std::{
     future::Future,
     sync::mpsc::{sync_channel, Receiver, SyncSender},
     task::Poll,
 };
 
-pub struct Executor<T: Program> {
-    queue: Receiver<Signal<T>>,
-    self_sender: SyncSender<Signal<T>>,
-    task_graph: Vec<TaskNode<T>>,
+pub struct Executor<'a, T: Program<'a>> {
+    queue: Receiver<Signal<'a, T>>,
+    self_sender: SyncSender<Signal<'a, T>>,
+    task_graph: Vec<TaskNode<'a, T>>,
 }
 
-impl<T: Program> Executor<T> {
+impl<'a, T: Program<'a> + 'a> Executor<'a, T> {
     #[inline(always)]
     pub fn new() -> Self {
         let (self_sender, queue) = sync_channel(1000);
@@ -22,7 +22,7 @@ impl<T: Program> Executor<T> {
         }
     }
 
-    pub fn run(&mut self, main: T) -> Result<(), T> {
+    pub fn run(&mut self, main: T) -> Result<'a, (), T> {
         #[allow(const_item_mutation)]
         self.branch(Signal::Branch {
             program: main,
@@ -63,7 +63,7 @@ impl<T: Program> Executor<T> {
         }
     }
 
-    pub fn branch(&mut self, branch: Signal<T>) {
+    pub fn branch(&mut self, branch: Signal<'a, T>) {
         let Signal::Branch {
             parent,
             output,
@@ -90,8 +90,11 @@ impl<T: Program> Executor<T> {
 
         self.task_graph.push(node);
         let last = self.task_graph.len() - 1;
+
+        let task_handle = &self.task_graph[last] as *const TaskNode<'a, T>;
+
         self.task_graph[last].future = program
-            .future::<T>(&self.task_graph[last])
+            .future::<T>(unsafe { &*task_handle })
             .extremely_unsafe_type_conversion();
     }
 }

@@ -1,7 +1,7 @@
 #![feature(future_join, pin_macro)]
 use std::pin::{pin, Pin};
 
-use metalmorphosis::*;
+use metalmorphosis::{execute, executor::Executor, work, MorphicIO, Program, TaskNode, Work};
 
 fn main() {
     use serde_derive::{Deserialize, Serialize};
@@ -25,8 +25,8 @@ fn main() {
         C,
     }
 
-    impl Program for TestProgram {
-        fn future<T: Program + From<Self>>(self, task_handle: &TaskNode<T>) -> Work {
+    impl<'a> Program<'a> for TestProgram {
+        fn future<T: Program<'a> + From<Self>>(self, task_handle: &'a TaskNode<'a, T>) -> Work<'a> {
             use TestProgram::*;
             work(async move {
                 match self {
@@ -53,5 +53,5 @@ fn main() {
         }
     }
 
-    execute(TestProgram::Main).unwrap();
+    execute(TestProgram::Main).unwrap()
 }
