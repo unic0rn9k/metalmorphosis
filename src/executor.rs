@@ -1,17 +1,19 @@
-use crate::{buffer, OptHint, Program, Result, Signal, TaskNode};
+use crate::{buffer, OptHint, Result, Signal, TaskHandle, TaskNode, Work};
 use std::{
     future::Future,
+    marker::PhantomData,
     sync::mpsc::{sync_channel, Receiver, SyncSender},
     task::Poll,
 };
 
-pub struct Executor<'a, T: Program<'a>> {
-    queue: Receiver<Signal<'a, T>>,
-    self_sender: SyncSender<Signal<'a, T>>,
-    task_graph: Vec<TaskNode<'a, T>>,
+pub struct Executor<'a> {
+    queue: Receiver<Signal<'a>>,
+    self_sender: SyncSender<Signal<'a>>,
+    task_graph: Vec<TaskNode<'a>>,
+    leaf_nodes: Vec<usize>,
 }
 
-impl<'a, T: Program<'a> + 'a> Executor<'a, T> {
+impl<'a> Executor<'a> {
     #[inline(always)]
     pub fn new() -> Self {
         let (self_sender, queue) = sync_channel(1000);
@@ -19,20 +21,30 @@ impl<'a, T: Program<'a> + 'a> Executor<'a, T> {
             queue,
             self_sender,
             task_graph: vec![],
+            leaf_nodes: vec![],
         }
     }
 
-    pub fn run(&mut self, main: T) -> Result<'a, (), T> {
-        #[allow(const_item_mutation)]
+    pub fn run(&mut self, main: impl FnOnce(TaskHandle<'a, ()>) -> Work<'a>) -> Result<'a, ()> {
         self.branch(Signal::Branch {
-            program: main,
+            program: main(TaskHandle {
+                sender: self.self_sender.clone(),
+                output: unsafe { std::mem::transmute(&()) },
+                this_node: 0,
+                opt_hint: OptHint {
+                    always_serialize: true,
+                },
+                phantom_data: PhantomData,
+            })
+            .extremely_unsafe_type_conversion(),
             parent: 0,
-            output: buffer::NULL.alias(),
+            output: buffer::null().alias(),
         });
         let mut n = 0;
 
         'polling: loop {
-            if n == self.task_graph.len() {
+            if n == self.leaf_nodes.len() {
+                // n = self.task_graph.len()-1; // ?
                 n = 0;
                 let mut branch = self.queue.try_recv();
                 while branch.is_ok() {
@@ -41,20 +53,21 @@ impl<'a, T: Program<'a> + 'a> Executor<'a, T> {
                 }
             }
 
-            if self.task_graph[n].children != 0 {
-                n += 1;
-                continue 'polling;
-            }
-
-            if self.task_graph[n].poll().is_ready() {
-                if self.task_graph[n].this_node == self.task_graph[n].parent {
-                    self.task_graph.clear();
+            let leaf = &mut self.task_graph[self.leaf_nodes[n]];
+            if leaf.poll().is_ready() {
+                if self.leaf_nodes[n] == leaf.parent {
+                    // self.task_graph.clear();
                     return Ok(());
                 } else {
-                    let parent = self.task_graph[n].parent;
-                    self.task_graph.remove(n);
-                    n = parent;
-                    self.task_graph[n].children -= 1;
+                    let parent = leaf.parent;
+                    // This would change the relative indecies of all nodes :(
+                    // self.task_graph.remove(leaf.this_node);
+                    self.task_graph[parent].children -= 1;
+                    if self.task_graph[parent].children == 0 {
+                        self.leaf_nodes[n] = parent;
+                    } else {
+                        self.leaf_nodes.remove(n);
+                    }
                     continue 'polling;
                 }
             }
@@ -63,7 +76,7 @@ impl<'a, T: Program<'a> + 'a> Executor<'a, T> {
         }
     }
 
-    pub fn branch(&mut self, branch: Signal<'a, T>) {
+    pub fn branch(&mut self, branch: Signal<'a>) {
         let Signal::Branch {
             parent,
             output,
@@ -75,27 +88,27 @@ impl<'a, T: Program<'a> + 'a> Executor<'a, T> {
             Some(parent) => parent.children += 1,
         }
 
-        let node = TaskNode {
+        // TODO: This does not have to be this slow...
+        for n in 0..self.leaf_nodes.len() {
+            if self.leaf_nodes[n] == parent {
+                self.leaf_nodes.remove(n);
+                break;
+            }
+        }
+
+        self.leaf_nodes.push(self.task_graph.len());
+        self.task_graph.push(TaskNode {
             sender: self.self_sender.clone(),
             output,
-            future: Box::pin(halt_once()),
-            parent,
+            future: program,
             this_node: self.task_graph.len(),
+            parent,
             children: 0,
             opt_hint: OptHint {
                 // Do we need to send data over network?
                 always_serialize: false,
             },
-        };
-
-        self.task_graph.push(node);
-        let last = self.task_graph.len() - 1;
-
-        let task_handle = &self.task_graph[last] as *const TaskNode<'a, T>;
-
-        self.task_graph[last].future = program
-            .future::<T>(unsafe { &*task_handle })
-            .extremely_unsafe_type_conversion();
+        });
     }
 }
 

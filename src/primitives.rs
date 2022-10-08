@@ -8,7 +8,7 @@ macro_rules! copy {
     };
 }
 
-copy! (u8 u32 u64 i8 i32 i64 f32 f64 usize isize bool char i128 u128 ());
+copy! (u8 u16 u32 u64 i8 i16 i32 i64 f32 f64 usize isize bool char i128 u128 ());
 
 unsafe impl MorphicIO<'_> for String {}
 unsafe impl<'a> MorphicIO<'a> for &'a str {}

@@ -1,4 +1,4 @@
-use crate::{MorphicIO, Program, Result};
+use crate::{MorphicIO, Result};
 use std::{any::type_name, intrinsics::transmute, marker::PhantomData};
 
 pub enum Source<'a, O> {
@@ -14,7 +14,7 @@ impl<'a, O> Source<'a, O> {
         Alias(self as *mut Source<O> as *mut (), PhantomData)
     }
 
-    pub fn write<T: Program<'a>>(&mut self, o: O) -> Result<'a, (), T>
+    pub fn write(&mut self, o: O) -> Result<'a, ()>
     where
         O: MorphicIO<'a>,
     {
@@ -27,7 +27,7 @@ impl<'a, O> Source<'a, O> {
         Ok(())
     }
 
-    pub fn read<T: Program<'a>>(self) -> Result<'a, O, T>
+    pub fn read(self) -> Result<'a, O>
     where
         O: MorphicIO<'a>,
     {
@@ -80,9 +80,11 @@ pub struct Alias<'a>(*mut (), PhantomData<&'a ()>);
 
 impl<'a> Alias<'a> {
     #[inline(always)]
-    pub unsafe fn attach_type<O: MorphicIO<'a>>(&self) -> &'a mut Source<O> {
+    pub unsafe fn attach_type<O: MorphicIO<'a>>(&self) -> &mut Source<'a, O> {
         unsafe { transmute(self.0) }
     }
 }
 
-pub const NULL: Source<()> = Source::Const;
+pub const fn null() -> Source<'static, ()> {
+    Source::Const
+}
