@@ -1,3 +1,5 @@
+use serde::Deserialize;
+
 use crate::MorphicIO;
 
 macro_rules! copy {
@@ -15,3 +17,4 @@ unsafe impl<'a> MorphicIO<'a> for &'a str {}
 
 unsafe impl<'a, T: MorphicIO<'a>> MorphicIO<'a> for Box<T> {}
 unsafe impl<'a, T: MorphicIO<'a>> MorphicIO<'a> for Vec<T> {}
+unsafe impl<'a, T: MorphicIO<'a>> MorphicIO<'a> for &'a [T] where &'a [T]: Deserialize<'a> {}

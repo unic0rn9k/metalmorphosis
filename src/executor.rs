@@ -29,7 +29,7 @@ impl<'a> Executor<'a> {
         self.branch(Signal::Branch {
             program: main(TaskHandle {
                 sender: self.self_sender.clone(),
-                output: unsafe { std::mem::transmute(&()) },
+                output: buffer::null().alias(),
                 this_node: 0,
                 opt_hint: OptHint {
                     always_serialize: true,
