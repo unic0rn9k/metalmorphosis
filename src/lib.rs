@@ -5,11 +5,17 @@
 //!
 //! # Weird place to have a todo list...
 //! - Maybe rename MorphicIO back to Distributed or distributable.
-//! - Think of a better name than "program". It's more like a node, or smth.
 //! - examples/math.rs (AutoDiff)
 //! - src/network.rs (distribute that bitch)
 //! - I removed wakers again
-//! - What was the point of all these lifetimes again?
+//! - Mixed static and dynamic graphs. (Describe location of static node based on displacement from dynamic parent node)
+//! - Node caching
+//!
+//! # Project timeline
+//! 0. Auto-diff graph (linear algebra mby)
+//! 1. multi-threaded (Static graphs, node caching)
+//! 2. distributed (mio and buffer/executor changes)
+//! 3. Route optimization (also when should caching occur? maybe just tell explicitly when :/)
 
 #![feature(new_uninit, future_join, type_alias_impl_trait)]
 
@@ -29,6 +35,7 @@ use error::*;
 mod buffer;
 //mod network;
 mod primitives;
+//mod static_graph;
 
 pub type BoxFuture<'a> = Pin<Box<dyn Future<Output = ()> + Unpin + 'a>>;
 //pub type Program<'a> = impl FnOnce(&TaskNode<'a>) -> Work<'a>;
@@ -62,13 +69,10 @@ impl<T: Program> Wake for SignalWaker<T> {
 */
 
 pub struct TaskNode<'a> {
-    sender: SyncSender<Signal<'a>>,
     output: buffer::Alias<'a>,
     future: BoxFuture<'a>,
-    this_node: usize,
     parent: usize,
     children: usize,
-    opt_hint: OptHint,
 }
 
 struct NullWaker;
@@ -110,6 +114,7 @@ impl<'a, T: MorphicIO<'a>> TaskHandle<'a, T> {
             Ok(buffer.write(o)?)
         }
     }
+
 
     // Should be able to take an iterater of programs,
     // that also describe edges,

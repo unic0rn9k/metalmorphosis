@@ -57,3 +57,8 @@ fn main() {
 
     execute(morphic_main)
 }
+
+//#[test]
+//fn test() {
+//    main()
+//}

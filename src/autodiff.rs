@@ -34,7 +34,7 @@
 //! and they can do stuff like calculate derivatives in respect to that node.
 //!
 //! ## Relevant literature
-//! https://thenumb.at/Autodiff/
+//! <https://thenumb.at/Autodiff/>
 //!
 //! # Goal check list
 //! - [ ] Basic float autodiff

@@ -10,6 +10,7 @@ pub struct Executor<'a> {
     queue: Receiver<Signal<'a>>,
     self_sender: SyncSender<Signal<'a>>,
     task_graph: Vec<TaskNode<'a>>,
+    // TODO: leaf_nodes do a lot of pointles heap allocations
     leaf_nodes: Vec<usize>,
 }
 
@@ -98,16 +99,14 @@ impl<'a> Executor<'a> {
 
         self.leaf_nodes.push(self.task_graph.len());
         self.task_graph.push(TaskNode {
-            sender: self.self_sender.clone(),
             output,
             future: program,
-            this_node: self.task_graph.len(),
             parent,
             children: 0,
-            opt_hint: OptHint {
+            /*opt_hint: OptHint {
                 // Do we need to send data over network?
                 always_serialize: false,
-            },
+            },*/
         });
     }
 }
