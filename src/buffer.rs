@@ -9,7 +9,6 @@ pub enum Source<'a, O> {
 }
 
 impl<'a, O> Source<'a, O> {
-    #[inline(always)]
     pub fn alias(&mut self) -> Alias<'a> {
         Alias(self as *mut Source<O> as *mut (), PhantomData)
     }
@@ -20,6 +19,7 @@ impl<'a, O> Source<'a, O> {
     {
         use Source::*;
         match self {
+            // Maybe this shouldnt just use bincode...
             Serialized(v) => *v = bincode::serialize(&o)?,
             Raw(v) => *v = o,
             _ => panic!("Cannot write to uninitialized or const buffer"),
@@ -39,7 +39,6 @@ impl<'a, O> Source<'a, O> {
         })
     }
 
-    #[inline(always)]
     pub fn uninit() -> Self {
         Self::Uninitialized(PhantomData)
     }
@@ -79,7 +78,6 @@ impl<'a, O> Source<'a, O> {
 pub struct Alias<'a>(*mut (), PhantomData<&'a ()>);
 
 impl<'a> Alias<'a> {
-    #[inline(always)]
     pub unsafe fn attach_type<O: MorphicIO<'a>>(&self) -> &mut Source<'a, O> {
         unsafe { transmute(self.0) }
     }

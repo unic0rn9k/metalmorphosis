@@ -20,10 +20,7 @@ const LANES_4: bool = cfg!(any(
 
 const LANES_16: bool = cfg!(target_feature = "avx512");
 
-/// Available SIMD lanes on CPU architecutre compiled on for the f32 type.
-/// So if you want to make a SIMD vector of f64 you would want to use LANES/2.
-/// Will be 0 if SIMD is not available.
-pub const MAX: usize = if LANES_16 {
+const MAX: usize = if LANES_16 {
     16
 } else if LANES_8 {
     8

@@ -43,9 +43,8 @@
 //! - [ ] Pre-allocation of needed memory for entire graph
 //! - [ ] Parallele matrix multiplication
 
-use std::{future::join, marker::PhantomData};
-
-use crate::{work, MorphicIO, Result, TaskNode, Work};
+use crate::{Result, TaskNode};
+use std::marker::PhantomData;
 
 /*
 trait Differentiable<'a>: Sized + std::fmt::Debug + Send + Sync + 'a {
@@ -169,7 +168,6 @@ impl<'a, LHS: Node<'a, Output = f32>, RHS: Node<'a, Output = f32>> Node<'a>
     type Derivative =
         Addf32<'a, Mulf32<'a, LHS::Derivative, RHS>, Mulf32<'a, RHS::Derivative, LHS>>;
 
-    #[inline(always)]
     fn sub_nodes() -> usize {
         RHS::sub_nodes() + LHS::sub_nodes()
     }
@@ -193,7 +191,6 @@ impl<'a, LHS: Node<'a, Output = f32>, RHS: Node<'a, Output = f32>> Node<'a>
     type Output = f32;
     type Derivative = Addf32<'a, LHS::Derivative, RHS::Derivative>;
 
-    #[inline(always)]
     fn sub_nodes() -> usize {
         RHS::sub_nodes() + LHS::sub_nodes()
     }

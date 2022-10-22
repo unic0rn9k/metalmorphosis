@@ -1,13 +1,11 @@
 #![feature(future_join, pin_macro)]
-use std::pin::{pin, Pin};
-
 use metalmorphosis::{
-    error::Result, execute, executor::Executor, work, MorphicIO, TaskHandle, TaskNode, Work,
+    execute,work, MorphicIO, TaskHandle, Work,
 };
 
 fn main() {
     use serde_derive::{Deserialize, Serialize};
-    use std::future::{join, Future};
+    use std::future::join;
 
     unsafe impl MorphicIO<'_> for TestData {
         const IS_COPY: bool = true;

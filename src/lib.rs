@@ -19,60 +19,49 @@
 
 #![feature(new_uninit, future_join, type_alias_impl_trait)]
 
+use branch::OptHint;
 use serde::{Deserialize, Serialize};
 use std::{
     future::Future,
     marker::PhantomData,
     pin::Pin,
-    sync::{mpsc::SyncSender, Arc},
+    sync::{mpsc::Sender, Arc},
     task::{Context, Poll, Wake, Waker},
 };
 
 pub mod autodiff;
 pub mod error;
 pub mod executor;
+mod static_graph;
 use error::*;
 mod buffer;
 //mod network;
+mod branch;
 mod primitives;
-//mod static_graph;
 
 pub type BoxFuture<'a> = Pin<Box<dyn Future<Output = ()> + Unpin + 'a>>;
-//pub type Program<'a> = impl FnOnce(&TaskNode<'a>) -> Work<'a>;
-
-#[derive(Clone, Copy, Debug)]
-pub struct OptHint {
-    pub always_serialize: bool,
-}
-
-pub enum Signal<'a> {
-    //Wake(usize),
-    Branch {
-        // Should just send a TaskNode instead.
-        program: BoxFuture<'a>,
-        parent: usize,
-        output: buffer::Alias<'a>,
-    },
-}
-
-unsafe impl<'a> std::marker::Send for Signal<'a> {}
 
 /*
-pub struct SignalWaker<T: Program>(usize, SyncSender<Signal<T>>);
+pub struct SignalWaker<T: Program>(usize, Sender<Signal<T>>);
 
 impl<T: Program> Wake for SignalWaker<T> {
-    #[inline(always)]
+
     fn wake(self: Arc<Self>) {
         (*self).1.send(Signal::Wake(self.0)).unwrap()
     }
 }
 */
 
-pub struct TaskNode<'a> {
-    output: buffer::Alias<'a>,
-    future: BoxFuture<'a>,
+pub struct Edge<'a> {
     parent: usize,
+    output: buffer::Alias<'a>,
+    opt_hint: OptHint,
+}
+
+pub struct TaskNode<'a> {
+    future: BoxFuture<'a>,
     children: usize,
+    edge: Edge<'a>,
 }
 
 struct NullWaker;
@@ -85,11 +74,10 @@ impl Wake for NullWaker {
 
 pub struct TaskHandle<'a, T: MorphicIO<'a>> {
     // Maybe this should also include a reference to its coresponding TaskNode?
-    sender: SyncSender<Signal<'a>>,
-    output: buffer::Alias<'a>,
+    sender: Sender<branch::Signal<'a>>,
     this_node: usize,
-    opt_hint: OptHint,
     phantom_data: PhantomData<T>,
+    edge: Edge<'a>,
 }
 
 impl<'a> TaskNode<'a> {
@@ -100,7 +88,7 @@ impl<'a> TaskNode<'a> {
 
 impl<'a, T: MorphicIO<'a>> TaskHandle<'a, T> {
     /// Return data from task to parent.
-    #[inline(always)]
+
     pub fn output(self, o: T) -> Result<'a, ()> {
         unsafe {
             let buffer = self.output.attach_type();
@@ -115,7 +103,6 @@ impl<'a, T: MorphicIO<'a>> TaskHandle<'a, T> {
         }
     }
 
-
     // Should be able to take an iterater of programs,
     // that also describe edges,
     // that way we can just append a whole existing graph at once.
@@ -124,7 +111,7 @@ impl<'a, T: MorphicIO<'a>> TaskHandle<'a, T> {
     pub async fn branch<O: MorphicIO<'a>>(
         &self,
         program: impl FnOnce(TaskHandle<'a, O>) -> Work<'a>,
-    ) -> Result<O> {
+    ) -> branch::Builder<'a, O> {
         // This is actually also unsafe, if the child doesn't write any data, and the parent tries to read it.
         let mut buffer = buffer::Source::uninit();
         let parent = self.this_node;
@@ -157,7 +144,7 @@ impl<'a, T: MorphicIO<'a>> TaskHandle<'a, T> {
     // This is gonna create problems in the future (haha thats a type)
     // if we dont make sure theres some information about which device its from,
     // and some safety checks.
-    #[inline(always)]
+
     pub fn node_id(&self) -> usize {
         self.this_node
     }
@@ -195,7 +182,7 @@ pub unsafe trait MorphicIO<'a>: 'a + Serialize + Deserialize<'a> + Send + Sync {
     ///
     /// # Safety
     /// As long as `IS_COPY` is set correctly, theres no problem.
-    #[inline(always)]
+
     unsafe fn buffer() -> Self {
         if Self::IS_COPY {
             unsafe { std::mem::MaybeUninit::uninit().assume_init() }
@@ -213,12 +200,10 @@ impl<'a> Work<'a> {
     }
 }
 
-#[inline(always)]
 pub fn execute<'a>(program: impl FnOnce(TaskHandle<'a, ()>) -> Work<'a>) {
     executor::Executor::new().run(program).unwrap()
 }
 
-#[inline(always)]
 pub fn work<'a>(f: impl Future<Output = ()> + 'a) -> Work<'a> {
     Work(Box::pin(f))
 }

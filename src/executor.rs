@@ -2,20 +2,19 @@ use crate::{buffer, OptHint, Result, Signal, TaskHandle, TaskNode, Work};
 use std::{
     future::Future,
     marker::PhantomData,
-    sync::mpsc::{sync_channel, Receiver, SyncSender},
+    sync::mpsc::{sync_channel, Receiver, Sender},
     task::Poll,
 };
 
 pub struct Executor<'a> {
     queue: Receiver<Signal<'a>>,
-    self_sender: SyncSender<Signal<'a>>,
+    self_sender: Sender<Signal<'a>>,
     task_graph: Vec<TaskNode<'a>>,
     // TODO: leaf_nodes do a lot of pointles heap allocations
     leaf_nodes: Vec<usize>,
 }
 
 impl<'a> Executor<'a> {
-    #[inline(always)]
     pub fn new() -> Self {
         let (self_sender, queue) = sync_channel(1000);
         Self {
@@ -117,7 +116,6 @@ pub struct HaltOnceWaker(bool);
 impl Future for HaltOnceWaker {
     type Output = ();
 
-    #[inline(always)]
     fn poll(
         mut self: std::pin::Pin<&mut Self>,
         _cx: &mut std::task::Context<'_>,

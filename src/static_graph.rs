@@ -1,45 +1,55 @@
-use crate::{BoxFuture, TaskHandle, TaskNode, Work, work, MorphicIO, buffer};
+// https://news.ycombinator.com/item?id=20512490
+// interesting...
+
+use crate::{buffer, MorphicIO, TaskHandle, TaskNode, Work};
 
 // Root node should return this, and should be used for allocation proceding.
 // Parents should pass return value to childre, and then also keep one for reading afterwards.
-trait Buffer{
-    fn push<T: MorphicIO<'a>>(val: T) -> buffer::Alias<'a>;
+trait Buffer<'a> {
+    fn alloc<T: MorphicIO<'a>>(&mut self) -> buffer::Alias<'a>;
+    fn new(capacity_in_bytes: usize) -> Self;
 }
 
 pub trait Descriptor<'a> {
     fn children(&self) -> usize;
-    fn node_depth_running_count(&self, ofset: usize) -> Vec<usize>{
-        // This can probs be done more efficiently
-        let mut sum = vec![ofset+1];
-        for n in 0..self.children(){
-            sum.append(&mut self.child(n).unwrap().node_depth_running_count(ofset+1+n))
+
+    /// It's likely a good idea to overwrite this, if you know exactly how many nodes are in the graph.
+    ///
+    /// ```text
+    ///   O
+    ///  /\
+    /// O  O
+    ///  \
+    ///   O
+    /// ```
+    ///
+    /// For example, the graph above should return 3.
+    fn sub_nodes(&self) -> usize {
+        let mut sum = self.children();
+        for n in 0..self.children() {
+            sum += self.child(n).sub_nodes();
         }
         sum
     }
 
-    fn output_size(&self) -> usize;
-    fn buffer(&self) -> Vec<u8>{
-        vec![]
+    /// Should return the sum of the output sizes of all nodes in the graph.
+    fn output_size(&self) -> usize {
+        todo!()
     }
 
     fn child(&self, idx: usize) -> Option<Box<dyn Descriptor<'a>>>;
+
+    /// This is where you put the actual funtion of the node.
     fn task(&self, handle: &TaskHandle<'a, ()>) -> Work<'a>;
 
-    fn load(&self, buffer: &mut [TaskNode<'a>], handle: &TaskHandle<'a, ()>) {
-        debug_assert!(
-            buffer.len() == self.sub_nodes() + 1,
-            "{} != {}",
-            buffer.len(),
-            self.sub_nodes() + 1
-        );
-
+    fn load(&self, buffer: &mut Vec<TaskNode<'a>>, handle: &TaskHandle<'a, ()>) {
         // This should be done in for loop.
-        buffer[0] = TaskNode::<'a> {
+        buffer.push(TaskNode::<'a> {
             future: self.task().extremely_unsafe_type_conversion(),
             children: self.children(),
-            parent: hande.this_node,
-            output: buffer::Source::<'a, ()>::uninit().alias()
-        };
+            parent: hande.this_node, // +ofset ?
+            output: buffer::Source::<'a, ()>::uninit().alias(),
+        });
 
         let mut child_addr = 1;
 
@@ -50,18 +60,16 @@ pub trait Descriptor<'a> {
                 return;
             };
             let child_sub_nodes = self.child(n).unwrap().sub_nodes();
-            child.load(
-                &mut buffer[child_addr..child_addr + child_sub_nodes + 1],
-                ofset + child_addr,
-            );
+            child.load(&mut buffer, ofset + child_addr);
             child_addr += child_sub_nodes + 1;
         }
     }
 
     fn graph(&self, ofset: usize) -> Vec<TaskNode<'a>> {
-        let mut buffer = Vec::with_capacity(self.sub_nodes() + 1);
-        self.load(&mut buffer[..], ofset);
-        buffer
+        let mut output_buffer = Self::Buffer::new(self.output_size());
+        let mut node_buffer = Vec::with_capacity(self.sub_nodes() + 1);
+        self.load(&mut node_buffer, /*handle, */ ofset);
+        node_buffer
     }
 }
 
@@ -71,8 +79,6 @@ fn nop_graph() {
     pub struct Nop(Vec<Nop>);
 
     impl<'a> Descriptor<'a> for Nop {
-
-
         fn child(&self, idx: usize) -> Option<Box<dyn Descriptor<'a>>> {
             match self.0.get(idx) {
                 Some(n) => Some(Box::new(n.clone())),
@@ -85,9 +91,7 @@ fn nop_graph() {
         }
 
         fn task(&self) -> Work<'a> {
-            work(async move{
-                todo!()
-             })
+            work(async move { todo!() })
         }
     }
 
