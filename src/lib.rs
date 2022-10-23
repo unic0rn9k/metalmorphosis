@@ -20,7 +20,8 @@
 #![feature(new_uninit, future_join, type_alias_impl_trait)]
 
 use branch::OptHint;
-use internal_utils::uninit;
+use error::*;
+use internal_utils::*;
 use serde::{Deserialize, Serialize};
 use std::{
     future::Future,
@@ -31,17 +32,18 @@ use std::{
 };
 
 pub mod autodiff;
+mod buffer;
 pub mod error;
 pub mod executor;
 mod static_graph;
-use error::*;
-mod buffer;
 //mod network;
 mod branch;
 mod internal_utils;
 mod primitives;
 
 pub type BoxFuture<'a> = Pin<Box<dyn Future<Output = ()> + Unpin + 'a>>;
+
+pub trait Task<'a, O: MorphicIO<'a>>: FnOnce(TaskHandle<'a, O>) -> Work<'a> {}
 
 /*
 pub struct SignalWaker<T: Program>(usize, Sender<Signal<T>>);
@@ -55,6 +57,7 @@ impl<T: Program> Wake for SignalWaker<T> {
 */
 
 pub struct Edge<'a> {
+    this_node: usize,
     parent: usize,
     output: buffer::Alias<'a>,
     opt_hint: OptHint,
@@ -77,9 +80,8 @@ impl Wake for NullWaker {
 pub struct TaskHandle<'a, T: MorphicIO<'a>> {
     // Maybe this should also include a reference to its coresponding TaskNode?
     sender: Sender<branch::Signal<'a>>,
-    this_node: usize,
-    phantom_data: PhantomData<T>,
     edge: Edge<'a>,
+    phantom_data: PhantomData<T>,
 }
 
 impl<'a> TaskNode<'a> {
@@ -110,11 +112,11 @@ impl<'a, T: MorphicIO<'a>> TaskHandle<'a, T> {
     // that way we can just append a whole existing graph at once.
     //
     // Maybe branches should be unsafe?
-    pub async fn branch<O: MorphicIO<'a>>(
+    pub async fn branch<F: Task<'a, O>, O: MorphicIO<'a>>(
         &self,
-        program: impl FnOnce(TaskHandle<'a, O>) -> Work<'a>,
-    ) -> branch::Builder<'a, O> {
-        branch::Builder::new(self, program(self).extremely_unsafe_type_conversion())
+        program: F,
+    ) -> branch::Builder<'a, F, O> {
+        branch::Builder::new(self, program)
     }
 
     pub fn new_edge(&self, output: &'a buffer::Alias<'a>) -> Edge<'a> {
@@ -123,6 +125,8 @@ impl<'a, T: MorphicIO<'a>> TaskHandle<'a, T> {
             // NOTE: self.this_node is used here, but is not properly initialized (branch.rs).
             parent: self.this_node,
             opt_hint: OptHint::default(),
+            // This may cause trouble in the future...
+            this_node: 0,
         }
     }
 
