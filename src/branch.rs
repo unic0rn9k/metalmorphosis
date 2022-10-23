@@ -57,7 +57,7 @@ impl<'a, F: Task<'a, O>, O: MorphicIO<'a>> Builder<'a, F, O> {
     }
 
     pub fn new<T: MorphicIO<'a>>(parent: &TaskHandle<'a, T>, program: F) -> Self {
-        // FIXME: Code bellow is very broken. And maybe there is a problem with safety in buffer::Alias
+        // FIXME: Maybe there is a problem with safety in buffer::Alias
         //
         // code bellow produces UB:
         // fn bruh<'a>(_: &'a ()) -> buffer::Alias<'a>{
@@ -74,6 +74,7 @@ impl<'a, F: Task<'a, O>, O: MorphicIO<'a>> Builder<'a, F, O> {
             program,
             has_halted: false,
         };
+        // VVV This ain't it VVV
         tmp.handle.edge = parent.new_edge(&tmp.buffer.alias());
         tmp
     }
