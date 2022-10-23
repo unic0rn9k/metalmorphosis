@@ -1,4 +1,4 @@
-use crate::Signal;
+use crate::branch::Signal;
 use std::sync::mpsc::{SendError, TryRecvError};
 use thiserror::Error;
 

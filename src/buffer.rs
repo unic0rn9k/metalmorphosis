@@ -83,6 +83,8 @@ impl<'a> Alias<'a> {
     }
 }
 
-pub const fn null() -> Source<'static, ()> {
-    Source::Const
+const NULL: Source<'static, ()> = Source::Const;
+
+pub const fn null() -> Alias<'static> {
+    NULL.alias()
 }

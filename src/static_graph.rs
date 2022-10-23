@@ -47,7 +47,7 @@ pub trait Descriptor<'a> {
         buffer.push(TaskNode::<'a> {
             future: self.task().extremely_unsafe_type_conversion(),
             children: self.children(),
-            parent: hande.this_node, // +ofset ?
+            parent: handle.this_node, // +ofset ?
             output: buffer::Source::<'a, ()>::uninit().alias(),
         });
 
@@ -91,7 +91,7 @@ fn nop_graph() {
         }
 
         fn task(&self) -> Work<'a> {
-            work(async move { todo!() })
+            crate::work(async move { todo!() })
         }
     }
 

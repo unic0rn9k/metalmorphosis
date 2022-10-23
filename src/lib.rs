@@ -20,6 +20,7 @@
 #![feature(new_uninit, future_join, type_alias_impl_trait)]
 
 use branch::OptHint;
+use internal_utils::uninit;
 use serde::{Deserialize, Serialize};
 use std::{
     future::Future,
@@ -37,6 +38,7 @@ use error::*;
 mod buffer;
 //mod network;
 mod branch;
+mod internal_utils;
 mod primitives;
 
 pub type BoxFuture<'a> = Pin<Box<dyn Future<Output = ()> + Unpin + 'a>>;
@@ -112,33 +114,16 @@ impl<'a, T: MorphicIO<'a>> TaskHandle<'a, T> {
         &self,
         program: impl FnOnce(TaskHandle<'a, O>) -> Work<'a>,
     ) -> branch::Builder<'a, O> {
-        // This is actually also unsafe, if the child doesn't write any data, and the parent tries to read it.
-        let mut buffer = buffer::Source::uninit();
-        let parent = self.this_node;
+        branch::Builder::new(self, program(self).extremely_unsafe_type_conversion())
+    }
 
-        let task_handle = TaskHandle::<'a, O> {
-            sender: self.sender.clone(),
-            output: buffer.alias(),
-            opt_hint: OptHint {
-                // Do we need to send data over network?. Idk if we can know this here.
-                always_serialize: !O::IS_COPY,
-            },
-            phantom_data: PhantomData,
-            // FIXME: This should not be initialized to 0
-            this_node: 0,
-        };
-
-        self.sender.send(Signal::Branch {
-            // Make a TypedTaskNode to pass as task_handle here.
-            // This way we can use type checking inside of program and then convert to untyped task node, that can be passed to executor
-            program: program(task_handle).extremely_unsafe_type_conversion(),
-            parent,
-            output: buffer.alias(),
-        })?;
-
-        executor::halt_once().await;
-
-        buffer.read()
+    pub fn new_edge(&self, output: &'a buffer::Alias<'a>) -> Edge<'a> {
+        Edge {
+            output,
+            // NOTE: self.this_node is used here, but is not properly initialized (branch.rs).
+            parent: self.this_node,
+            opt_hint: OptHint::default(),
+        }
     }
 
     // This is gonna create problems in the future (haha thats a type)
@@ -185,7 +170,7 @@ pub unsafe trait MorphicIO<'a>: 'a + Serialize + Deserialize<'a> + Send + Sync {
 
     unsafe fn buffer() -> Self {
         if Self::IS_COPY {
-            unsafe { std::mem::MaybeUninit::uninit().assume_init() }
+            unsafe { uninit() }
         } else {
             panic!("Tried to create buffer for non-copy data")
         }
