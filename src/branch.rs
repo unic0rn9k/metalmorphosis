@@ -1,22 +1,38 @@
-use crate::{
-    buffer, error::Result, internal_utils::*, BoxFuture, Edge, MorphicIO, Task, TaskHandle,
-};
+use crate::{buffer, error::Result, BoxFuture, Edge, MorphicIO, Task, TaskHandle};
 use std::{future::Future, marker::PhantomData, task::Poll};
 pub use OptHintSingle::*;
 
+#[derive(Debug, Clone, Copy, Default)]
+pub enum AllocationStrategy {
+    #[default]
+    Dynamic,
+    DynamicWithReserved(usize),
+    Static(usize),
+}
+
+impl Into<OptHintSingle> for AllocationStrategy {
+    fn into(self) -> OptHintSingle {
+        AllocStrat(self)
+    }
+}
+
 #[derive(Default, Clone, Copy, Debug)]
 pub struct OptHint {
-    always_serialize: bool,
-    cache: bool,
-    distribute: bool,
+    pub serialize: bool,
+    pub cache: bool,
+    pub distribute: bool,
+    pub alloc: AllocationStrategy,
+    pub branches: usize,
 }
 
 impl OptHint {
     fn add(&mut self, other: OptHintSingle) {
         match other {
-            AlwaysSerialize => self.always_serialize = true,
+            AlwaysSerialize => self.serialize = true,
             Cache => self.cache = true,
             Distribute => self.distribute = true,
+            AllocStrat(a) => self.alloc = a,
+            Branches(n) => self.branches = n,
         }
     }
 }
@@ -25,6 +41,8 @@ pub enum OptHintSingle {
     AlwaysSerialize,
     Cache,
     Distribute,
+    AllocStrat(AllocationStrategy),
+    Branches(usize),
 }
 
 // Maybe Signal, allong with some other stuff, should be moved to smth like edge.rs.
@@ -52,8 +70,10 @@ pub struct Builder<'a, F: Task<'a, O>, O: MorphicIO<'a>> {
 }
 
 impl<'a, F: Task<'a, O>, O: MorphicIO<'a>> Builder<'a, F, O> {
-    pub fn hint(&mut self, hint: OptHintSingle) {
-        self.handle.edge.opt_hint.add(hint);
+    pub fn hint<I: IntoIterator<Item = OptHintSingle>>(&mut self, hint: I) {
+        for hint in hint {
+            self.handle.edge.opt_hint.add(hint);
+        }
     }
 
     pub fn new<T: MorphicIO<'a>>(parent: &TaskHandle<'a, T>, program: F) -> Self {
@@ -64,19 +84,16 @@ impl<'a, F: Task<'a, O>, O: MorphicIO<'a>> Builder<'a, F, O> {
         //     let dude = buffer::Source::<'a, ()>::uninit();
         //     dude.alias()
         // }
-        let mut tmp = Self {
+        Self {
             handle: TaskHandle {
                 sender: parent.sender.clone(),
                 phantom_data: PhantomData,
-                edge: unsafe { uninit() },
+                edge: parent.new_edge(),
             },
             buffer: buffer::Source::uninit(),
             program,
             has_halted: false,
-        };
-        // VVV This ain't it VVV
-        tmp.handle.edge = parent.new_edge(&tmp.buffer.alias());
-        tmp
+        }
     }
 }
 
@@ -88,9 +105,13 @@ impl<'a, F: Task<'a, O>, O: MorphicIO<'a>> Future for Builder<'a, F, O> {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
         if self.has_halted {
+            self.has_halted = false;
             return Poll::Ready(self.buffer.read());
         }
 
+        self.handle.edge.output = self.buffer.alias();
+
+        // Maybe this should be moved up to `new`
         self.handle.sender.send(Signal::Branch {
             // Make a TypedTaskNode to pass as task_handle here.
             // This way we can use type checking inside of program and then convert to untyped task node, that can be passed to executor

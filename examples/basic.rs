@@ -1,7 +1,5 @@
 #![feature(future_join, pin_macro)]
-use metalmorphosis::{
-    execute,work, MorphicIO, TaskHandle, Work,
-};
+use metalmorphosis::{execute, executor::halt_once, work, MorphicIO, TaskHandle, Work};
 
 fn main() {
     use serde_derive::{Deserialize, Serialize};
@@ -29,9 +27,28 @@ fn main() {
         work(async move { task_handle.output(TestData::B).unwrap() })
     }
 
+    // This really should not work 😬
+    fn shouldnt_work<'a>(handle: TaskHandle<'a, &'a u8>) -> Work<'a> {
+        work(async move { task_handle.output(&1).unwrap() })
+        // It should work if the TaskNode was kept alive...
+        // like with this:
+        // ```rust
+        // loop{
+        //     halt_once().await
+        // }
+        // ```
+    }
+
     fn morphic_main<'a>(task_handle: TaskHandle<'a, ()>) -> Work<'a> {
+        // Maybe do something so only preloaded branches can be distributed.
+        let preloaded = task_handle.branch(a);
+
         work(async move {
             println!("::start");
+
+            for _ in 0..10 {
+                let _ = preloaded.await;
+            }
 
             let a = task_handle.branch(a);
             println!("Can branch");

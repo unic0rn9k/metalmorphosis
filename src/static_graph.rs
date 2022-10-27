@@ -3,9 +3,41 @@
 
 use crate::{buffer, MorphicIO, TaskHandle, TaskNode, Work};
 
+// # Cache Pre-allocation
+//
+// if !this.is_prealloc(){
+//  let mut prealloc = buffer::new(this.child_prealloc);
+//  self.prealloc = &mut prealloc as *mut Buffer
+// }else{
+//  self.prealloc = parent.prealloc;
+// }
+//
+// let alloc = prealloc::Static::<23>();
+// handle.with_preallocator(&mut alloc)
+//
+// When branch is called, self.prealloc should be used (if this.is_prealloc) for allocating buffer::Alias'
+//
+//
+// # Static graph
+//
+// n = task_graph.len() // not this_node!
+// nodes -> task_graph::reserve
+// bytes -> buffer::new
+//
+// for node{
+//  output = buffer.alloc(node::T)
+//  node(n, output) -> task_graph.insert(node.this_node + n)
+//  node(n, buffer) // make node insert its children relative to this_node and n
+// }
+//
+
 // Root node should return this, and should be used for allocation proceding.
 // Parents should pass return value to childre, and then also keep one for reading afterwards.
 trait Buffer<'a> {
+    // En ring buffer, der tjekker om data den overwriter, er blevet dealokeret.
+    // Den kan finde ud af om det er deallokeret ved at kigge om de nodes der ejer outputtet til
+    // den data der der fylder den mindste mængde bytes der passer til den nye data.
+    // fordi det er en ring buffer vil de ældste nodes blive tjekket først.
     fn alloc<T: MorphicIO<'a>>(&mut self) -> buffer::Alias<'a>;
     fn new(capacity_in_bytes: usize) -> Self;
 }

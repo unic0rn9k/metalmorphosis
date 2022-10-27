@@ -20,6 +20,7 @@
 #![feature(new_uninit, future_join, type_alias_impl_trait)]
 
 use branch::OptHint;
+use buffer::{RAW, SERIALIZED};
 use error::*;
 use internal_utils::*;
 use serde::{Deserialize, Serialize};
@@ -35,7 +36,7 @@ pub mod autodiff;
 mod buffer;
 pub mod error;
 pub mod executor;
-mod static_graph;
+//mod static_graph;
 //mod network;
 mod branch;
 mod internal_utils;
@@ -43,6 +44,7 @@ mod primitives;
 
 pub type BoxFuture<'a> = Pin<Box<dyn Future<Output = ()> + Unpin + 'a>>;
 
+// Should be able to take a generic input, in addition to the handle.
 pub trait Task<'a, O: MorphicIO<'a>>: FnOnce(TaskHandle<'a, O>) -> Work<'a> {}
 
 /*
@@ -95,13 +97,13 @@ impl<'a, T: MorphicIO<'a>> TaskHandle<'a, T> {
 
     pub fn output(self, o: T) -> Result<'a, ()> {
         unsafe {
-            let buffer = self.output.attach_type();
-            if T::IS_COPY && !self.opt_hint.always_serialize {
+            let buffer = self.edge.output.attach_type();
+            if T::IS_COPY && !self.edge.opt_hint.serialize {
                 // Raw data (just move it)
-                buffer.set_data_format::<'r'>()
+                buffer.set_data_format::<RAW>()
             } else {
                 // Serialized data
-                buffer.set_data_format::<'s'>()
+                buffer.set_data_format::<SERIALIZED>()
             }
             Ok(buffer.write(o)?)
         }
@@ -119,11 +121,11 @@ impl<'a, T: MorphicIO<'a>> TaskHandle<'a, T> {
         branch::Builder::new(self, program)
     }
 
-    pub fn new_edge(&self, output: &'a buffer::Alias<'a>) -> Edge<'a> {
+    pub fn new_edge(&self) -> Edge<'a> {
         Edge {
-            output,
+            output: buffer::null(),
             // NOTE: self.this_node is used here, but is not properly initialized (branch.rs).
-            parent: self.this_node,
+            parent: self.edge.this_node,
             opt_hint: OptHint::default(),
             // This may cause trouble in the future...
             this_node: 0,
@@ -133,9 +135,8 @@ impl<'a, T: MorphicIO<'a>> TaskHandle<'a, T> {
     // This is gonna create problems in the future (haha thats a type)
     // if we dont make sure theres some information about which device its from,
     // and some safety checks.
-
     pub fn node_id(&self) -> usize {
-        self.this_node
+        self.edge.this_node
     }
 
     pub async fn attach_tree<O: MorphicIO<'a>>(tree: Vec<TaskNode<'a>>) -> Result<'a, O> {

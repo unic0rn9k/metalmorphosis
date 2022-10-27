@@ -75,6 +75,7 @@ impl<'a, O> Source<'a, O> {
     }
 }
 
+// TODO: Mby replace `*mut ()` with `&'b Source<'a, ()>`
 pub struct Alias<'a>(*mut (), PhantomData<&'a ()>);
 
 impl<'a> Alias<'a> {
@@ -88,3 +89,6 @@ const NULL: Source<'static, ()> = Source::Const;
 pub const fn null() -> Alias<'static> {
     NULL.alias()
 }
+
+pub const RAW: char = 'r';
+pub const SERIALIZED: char = 's';

@@ -1,14 +1,15 @@
-use crate::{buffer, OptHint, Result, Signal, TaskHandle, TaskNode, Work};
+use crate::{branch::Signal, buffer, OptHint, Result, TaskHandle, TaskNode, Work};
 use std::{
     future::Future,
     marker::PhantomData,
-    sync::mpsc::{sync_channel, Receiver, Sender},
+    sync::mpsc::{channel, Receiver, Sender},
     task::Poll,
 };
 
 pub struct Executor<'a> {
     queue: Receiver<Signal<'a>>,
     self_sender: Sender<Signal<'a>>,
+    // DashMap
     task_graph: Vec<TaskNode<'a>>,
     // TODO: leaf_nodes do a lot of pointles heap allocations
     leaf_nodes: Vec<usize>,
@@ -16,7 +17,7 @@ pub struct Executor<'a> {
 
 impl<'a> Executor<'a> {
     pub fn new() -> Self {
-        let (self_sender, queue) = sync_channel(1000);
+        let (self_sender, queue) = channel::<Signal<'a>>();
         Self {
             queue,
             self_sender,
