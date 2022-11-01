@@ -70,6 +70,16 @@ fn main() {
         })
     }
 
+    fn mpi_main(){
+        let a = buffer;
+        if rank == 0{
+            a.read()
+        }
+        if rank == 1{
+            a.write()
+        }
+    }
+
     execute(morphic_main)
 }
 

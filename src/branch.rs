@@ -12,7 +12,7 @@ pub enum AllocationStrategy {
 
 impl Into<OptHintSingle> for AllocationStrategy {
     fn into(self) -> OptHintSingle {
-        AllocStrat(self)
+        AllocStrategy(self)
     }
 }
 
@@ -21,8 +21,9 @@ pub struct OptHint {
     pub serialize: bool,
     pub cache: bool,
     pub distribute: bool,
+    pub run_on_root: bool,
     pub alloc: AllocationStrategy,
-    pub branches: usize,
+    pub reserved_branches: usize,
 }
 
 impl OptHint {
@@ -31,21 +32,41 @@ impl OptHint {
             AlwaysSerialize => self.serialize = true,
             Cache => self.cache = true,
             Distribute => self.distribute = true,
-            AllocStrat(a) => self.alloc = a,
-            Branches(n) => self.branches = n,
+            AllocStrategy(a) => self.alloc = a,
+            // TODO: these should not do the same thing.
+            HardReserveBranches(n) => self.reserved_branches = n,
+            SoftReserveBranches(n) => self.reserved_branches = n,
+            RunOnRoot => self.run_on_root = true,
+            RunOnAll => todo!(),
         }
     }
 }
 
 pub enum OptHintSingle {
+    /// Just serialized the output
     AlwaysSerialize,
+    /// Safe buffer for storing temporary values, and other stuff for later use.
+    /// This is usefull if you await the same branch multiple times.
+    /// for example like you would do in a for loop.
+    /// Might me useless in the future.
     Cache,
+    // Agresively distribute task
     Distribute,
-    AllocStrat(AllocationStrategy),
-    Branches(usize),
+    // This task should always be run on the root device.
+    // This is for example useful for comunicating data to a human.
+    // If youre connected to a cluster with your laptop, and you want some plots, you can make sure theire saved to the right device.
+    RunOnRoot,
+    // Run this on all devices. Usefull for synchronizing data.
+    RunOnAll,
+    // Do you wanna use a ringbuffer? now you can
+    AllocStrategy(AllocationStrategy),
+    // Reserve branches for static-graph allocation.
+    HardReserveBranches(usize),
+    // Do you have some idea of how many branches a node will spawn? Tell the executor, then.
+    SoftReserveBranches(usize),
 }
 
-// Maybe Signal, allong with some other stuff, should be moved to smth like edge.rs.
+// Maybe Signal, along with some other stuff, should be moved to smth like edge.rs.
 pub enum Signal<'a> {
     //Wake(usize),
     Branch {
@@ -89,6 +110,7 @@ impl<'a, F: Task<'a, O>, O: MorphicIO<'a>> Builder<'a, F, O> {
                 sender: parent.sender.clone(),
                 phantom_data: PhantomData,
                 edge: parent.new_edge(),
+                preallocated_children: 0,
             },
             buffer: buffer::Source::uninit(),
             program,
@@ -112,12 +134,13 @@ impl<'a, F: Task<'a, O>, O: MorphicIO<'a>> Future for Builder<'a, F, O> {
         self.handle.edge.output = self.buffer.alias();
 
         // Maybe this should be moved up to `new`
-        self.handle.sender.send(Signal::Branch {
+        self.handle.sender.push(
             // Make a TypedTaskNode to pass as task_handle here.
-            // This way we can use type checking inside of program and then convert to untyped task node, that can be passed to executor
-            program: (self.program)(self.handle).extremely_unsafe_type_conversion(),
-            edge: &mut self.handle.edge as *mut Edge<'a>,
-        })?;
+            // This way we can use type checking inside of program and then convert to untyped task node,
+            // that can be passed to executor
+            (self.program)(self.handle),
+            &mut self.handle.edge,
+        );
 
         self.has_halted = true;
 

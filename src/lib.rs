@@ -1,9 +1,12 @@
+//! <div align="center">
 //! # metalmorphosis
+//! </div>
+//!
 //! Distributed async runtime in rust, with a focus on being able to build computation graphs (specifically auto-diff).
 //!
 //! examples can be found in examples directory.
 //!
-//! # Weird place to have a todo list...
+//! ## Weird place to have a todo list...
 //! - Maybe rename MorphicIO back to Distributed or distributable.
 //! - examples/math.rs (AutoDiff)
 //! - src/network.rs (distribute that bitch)
@@ -11,24 +14,33 @@
 //! - Mixed static and dynamic graphs. (Describe location of static node based on displacement from dynamic parent node)
 //! - Node caching
 //!
-//! # Project timeline
+//! ## Project timeline
 //! 0. Auto-diff graph (linear algebra mby)
 //! 1. multi-threaded (Static graphs, node caching)
 //! 2. distributed (mio and buffer/executor changes)
 //! 3. Route optimization (also when should caching occur? maybe just tell explicitly when :/)
+//!
+//! ## Distributed pointers
+//! Function side-effects are very inefficient on a distributed system,
+//! as there is no way to directly mutate data on another device.
 
 #![feature(new_uninit, future_join, type_alias_impl_trait)]
 
 use branch::OptHint;
 use buffer::{RAW, SERIALIZED};
+use dashmap::DashMap;
 use error::*;
 use internal_utils::*;
+use primitives::Array;
 use serde::{Deserialize, Serialize};
 use std::{
     future::Future,
     marker::PhantomData,
     pin::Pin,
-    sync::{mpsc::Sender, Arc},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
     task::{Context, Poll, Wake, Waker},
 };
 
@@ -47,6 +59,65 @@ pub type BoxFuture<'a> = Pin<Box<dyn Future<Output = ()> + Unpin + 'a>>;
 // Should be able to take a generic input, in addition to the handle.
 pub trait Task<'a, O: MorphicIO<'a>>: FnOnce(TaskHandle<'a, O>) -> Work<'a> {}
 
+pub trait StaticIteratorTask<'a, O: MorphicIO<'a>, const ITERATIONS: usize>:
+    FnOnce(TaskHandle<'a, Array<O, ITERATIONS>>) -> Work<'a>
+{
+}
+
+pub trait HeapIteratorTask<'a, O: MorphicIO<'a>>:
+    FnOnce(TaskHandle<'a, Vec<O>>) -> Work<'a>
+{
+}
+
+pub struct TaskGraph<'a> {
+    reserved: AtomicUsize,
+    nodes: DashMap<usize, TaskNode<'a>>,
+}
+
+impl<'a> TaskGraph<'a> {
+    fn push(self: Arc<Self>, program: Work<'a>, edge: &mut Edge<'a>) {
+        edge.this_node = self.reserved.fetch_add(1, Ordering::SeqCst);
+        if self
+            .nodes
+            .insert(
+                edge.this_node,
+                TaskNode {
+                    future: program.extremely_unsafe_type_conversion(),
+                    children: 0,
+                    edge: *edge,
+                },
+            )
+            .is_some()
+        {
+            // TODO: This should probably return an error instead.
+            println!("Existing task_node was overwritten 😬")
+        };
+    }
+
+    fn reserve(self: Arc<Self>, nodes: usize) -> usize {
+        if self.nodes.try_reserve(nodes).is_err() {
+            // TODO: This should probably return an error instead.
+            println!("Unable to reserve nodes (Mby DashMap ain't it)")
+        };
+        self.reserved.fetch_add(1, Ordering::SeqCst)
+    }
+
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            reserved: AtomicUsize::new(0),
+            nodes: DashMap::new(),
+        })
+    }
+}
+
+impl<'a> std::ops::Index<usize> for TaskGraph<'a> {
+    type Output = TaskNode<'a>;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.nodes.get(&index).unwrap()
+    }
+}
+
 /*
 pub struct SignalWaker<T: Program>(usize, Sender<Signal<T>>);
 
@@ -58,6 +129,7 @@ impl<T: Program> Wake for SignalWaker<T> {
 }
 */
 
+#[derive(Clone, Copy)]
 pub struct Edge<'a> {
     this_node: usize,
     parent: usize,
@@ -65,6 +137,17 @@ pub struct Edge<'a> {
     opt_hint: OptHint,
 }
 
+const ROOT_EDGE: Edge<'static> = Edge {
+    this_node: 0,
+    parent: 0,
+    output: null_alias!(),
+    opt_hint: OptHint::default(),
+};
+
+// TODO: There should be some concept of a reusable node, that can do the same thing multiple times.
+// All nodes should be reusable, but they should be able to implement the looping themselves,
+// if it can be done more efficiently like that.
+// Otherwise it should just reconstrukt the node for every iteration.
 pub struct TaskNode<'a> {
     future: BoxFuture<'a>,
     children: usize,
@@ -80,10 +163,12 @@ impl Wake for NullWaker {
 }
 
 pub struct TaskHandle<'a, T: MorphicIO<'a>> {
-    // Maybe this should also include a reference to its coresponding TaskNode?
-    sender: Sender<branch::Signal<'a>>,
+    // Maybe this should also include a reference to its corresponding TaskNode?
+    sender: Arc<TaskGraph<'a>>,
     edge: Edge<'a>,
     phantom_data: PhantomData<T>,
+    // TODO: Make sure you dont insert a task into a spot that already contains a running task.
+    preallocated_children: usize,
 }
 
 impl<'a> TaskNode<'a> {
@@ -109,7 +194,7 @@ impl<'a, T: MorphicIO<'a>> TaskHandle<'a, T> {
         }
     }
 
-    // Should be able to take an iterater of programs,
+    // Should be able to take an iterator of programs,
     // that also describe edges,
     // that way we can just append a whole existing graph at once.
     //
@@ -123,7 +208,7 @@ impl<'a, T: MorphicIO<'a>> TaskHandle<'a, T> {
 
     pub fn new_edge(&self) -> Edge<'a> {
         Edge {
-            output: buffer::null(),
+            output: null_alias!(),
             // NOTE: self.this_node is used here, but is not properly initialized (branch.rs).
             parent: self.edge.this_node,
             opt_hint: OptHint::default(),
@@ -133,7 +218,7 @@ impl<'a, T: MorphicIO<'a>> TaskHandle<'a, T> {
     }
 
     // This is gonna create problems in the future (haha thats a type)
-    // if we dont make sure theres some information about which device its from,
+    // if we don't make sure theres some information about which device its from,
     // and some safety checks.
     pub fn node_id(&self) -> usize {
         self.edge.this_node

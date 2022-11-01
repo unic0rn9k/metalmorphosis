@@ -76,6 +76,7 @@ impl<'a, O> Source<'a, O> {
 }
 
 // TODO: Mby replace `*mut ()` with `&'b Source<'a, ()>`
+#[derive(Clone, Copy)]
 pub struct Alias<'a>(*mut (), PhantomData<&'a ()>);
 
 impl<'a> Alias<'a> {
@@ -84,10 +85,14 @@ impl<'a> Alias<'a> {
     }
 }
 
-const NULL: Source<'static, ()> = Source::Const;
+pub const NULL: Source<'static, ()> = Source::Const;
 
-pub const fn null() -> Alias<'static> {
-    NULL.alias()
+#[macro_export]
+macro_rules! null_alias {
+    () => {{
+        #[allow(const_item_mutation)]
+        buffer::NULL.alias()
+    }};
 }
 
 pub const RAW: char = 'r';
