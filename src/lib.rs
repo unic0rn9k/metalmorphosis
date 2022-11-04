@@ -1,5 +1,5 @@
 //! <div align="center">
-//! # metalmorphosis
+//! <h1> metalmorphosis </h1>
 //! </div>
 //!
 //! Distributed async runtime in rust, with a focus on being able to build computation graphs (specifically auto-diff).
@@ -23,6 +23,18 @@
 //! ## Distributed pointers
 //! Function side-effects are very inefficient on a distributed system,
 //! as there is no way to directly mutate data on another device.
+//!
+//! The easiest way to handle data return might be with distributed side-effects tho.
+//! Just make buffer::Alias serializable and contain a machine-id.
+//! Then when you want to write to it, it might just send the pointer and data to the machine with the id,
+//! which will then write the data.
+//! This will of course likely only work if the data is in the serialized format.
+//!
+//! it should be possible to do *Prefetching* of distributed pointer values.
+//! Meaning if we know that 'this device' is gonna read from 'other device',
+//! and other device already has the value ready.
+//! then it would make sense to schedule a read from other device,
+//! even tho this device doesn't need the value yet.
 
 #![feature(new_uninit, future_join, type_alias_impl_trait)]
 
@@ -56,7 +68,17 @@ mod primitives;
 
 pub type BoxFuture<'a> = Pin<Box<dyn Future<Output = ()> + Unpin + 'a>>;
 
-// Should be able to take a generic input, in addition to the handle.
+// Functions in rust are stupid. Cant do multiple dispatch the cool way eg: fn bruh(a: f32); fn bruh(a: &str)
+// ```rust
+// trait Task<'a, O: MorphicIO<'a>>: MorphicIO<'a>{
+//      fn hint() -> Hint{
+//          How many childre we have?
+//          How many bytes should be preallocated?
+//          Then combine this with some hints from the parent. And send that bitch to the executor.
+//      }
+//      fn work(&mut self, handle: TaskHandle<'a, O>) -> Work<'a>;
+// }
+// ```
 pub trait Task<'a, O: MorphicIO<'a>>: FnOnce(TaskHandle<'a, O>) -> Work<'a> {}
 
 pub trait StaticIteratorTask<'a, O: MorphicIO<'a>, const ITERATIONS: usize>:
@@ -69,6 +91,8 @@ pub trait HeapIteratorTask<'a, O: MorphicIO<'a>>:
 {
 }
 
+// FIXME: Doubt this is possible. How we supposed to reserve on a hashmap like this?
+// This needs to be tested.
 pub struct TaskGraph<'a> {
     reserved: AtomicUsize,
     nodes: DashMap<usize, TaskNode<'a>>,

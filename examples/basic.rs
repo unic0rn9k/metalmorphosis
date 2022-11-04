@@ -70,6 +70,27 @@ fn main() {
         })
     }
 
+    fn smth<'a>(handle: TaskHandle<'a, u8>) -> Work<'a> {
+        let a = handle.branch(a).hint([KeepLocal]);
+        work(async move {
+            a.await + 2
+        })
+    }
+
+    fn test<'a>(handle: TaskHandle<'a, u8>) -> Work<'a> {
+
+        let a = handle.branch(smth.repeat(10));
+
+        work(async move {
+
+            let mut sum = 0;
+            for n in 0..10{
+                sum += a.await
+            }
+            sum
+        })
+    }
+
     fn mpi_main(){
         let a = buffer;
         if rank == 0{

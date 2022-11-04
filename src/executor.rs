@@ -36,6 +36,7 @@ impl<'a> Executor<'a> {
         let root_handle = TaskHandle {
             sender: self.task_graph.clone(),
             edge: ROOT_EDGE,
+            preallocated_children: 0,
             phantom_data: PhantomData,
         };
         self.task_graph.push(main(root_handle), &mut ROOT_EDGE);

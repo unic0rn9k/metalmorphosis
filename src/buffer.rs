@@ -8,7 +8,20 @@ pub enum Source<'a, O> {
     Const,
 }
 
+pub struct RcSource<'a, O> {
+    data: Source<'a, O>,
+    rc: u16,
+}
+
+// If rc == 0 && data != uninit { not RC }
+// If rc == 0 && data == UninitRc { rc++ when alias; don't allow read }
+// If rc != 0 && data != uninit { rc-- when read; don't allow write or alias }
+// When rc is enabled, Alias can just straight up be a future.
+
 impl<'a, O> Source<'a, O> {
+    pub fn clear(&mut self) {
+        *self = Self::Uninitialized(PhantomData);
+    }
     pub fn alias(&mut self) -> Alias<'a> {
         Alias(self as *mut Source<O> as *mut (), PhantomData)
     }
@@ -19,7 +32,7 @@ impl<'a, O> Source<'a, O> {
     {
         use Source::*;
         match self {
-            // Maybe this shouldnt just use bincode...
+            // Maybe this shouldn't just use bincode...
             Serialized(v) => *v = bincode::serialize(&o)?,
             Raw(v) => *v = o,
             _ => panic!("Cannot write to uninitialized or const buffer"),
@@ -90,8 +103,9 @@ pub const NULL: Source<'static, ()> = Source::Const;
 #[macro_export]
 macro_rules! null_alias {
     () => {{
-        #[allow(const_item_mutation)]
-        buffer::NULL.alias()
+        //#[allow(const_item_mutation)]
+        //buffer::NULL.alias()
+        todo!()
     }};
 }
 
