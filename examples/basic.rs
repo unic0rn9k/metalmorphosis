@@ -72,31 +72,27 @@ fn main() {
 
     fn smth<'a>(handle: TaskHandle<'a, u8>) -> Work<'a> {
         let a = handle.branch(a).hint([KeepLocal]);
-        work(async move {
-            a.await + 2
-        })
+        work(async move { a.await + 2 })
     }
 
     fn test<'a>(handle: TaskHandle<'a, u8>) -> Work<'a> {
-
         let a = handle.branch(smth.repeat(10));
 
         work(async move {
-
             let mut sum = 0;
-            for n in 0..10{
+            for n in 0..10 {
                 sum += a.await
             }
             sum
         })
     }
 
-    fn mpi_main(){
+    fn mpi_main() {
         let a = buffer;
-        if rank == 0{
+        if rank == 0 {
             a.read()
         }
-        if rank == 1{
+        if rank == 1 {
             a.write()
         }
     }

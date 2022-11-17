@@ -35,8 +35,17 @@
 //! and other device already has the value ready.
 //! then it would make sense to schedule a read from other device,
 //! even tho this device doesn't need the value yet.
+//!
+//! # Implement me
+//! https://play.rust-lang.org/?version=nightly&mode=debug&edition=2021&code=use%20std%3A%3Aops%3A%3A*%3B%0A%0Astruct%20TaskHandle%3B%0A%0Atrait%20TaskHandleProvider%3C%27a%3E%7B%0A%20%20%20%20fn%20handle(%26%27a%20mut%20self)%20-%3E%20%26%27a%20mut%20TaskHandle%3B%0A%7D%0A%0Aimpl%3C%27a%3E%20TaskHandleProvider%3C%27a%3E%20for%20TaskHandle%7B%0A%20%20%20%20%23%5Binline(always)%5D%0A%20%20%20%20fn%20handle(%26%27a%20mut%20self)%20-%3E%20%26%27a%20mut%20Self%7B%0A%20%20%20%20%20%20%20%20self%0A%20%20%20%20%7D%0A%7D%0A%0Aimpl%3C%27a%2C%20I%3A%20Iterator%3CItem%3D%26%27a%20mut%20TaskHandle%3E%3E%20TaskHandleProvider%3C%27a%3E%20for%20I%7B%0A%20%20%20%20%23%5Binline(always)%5D%0A%20%20%20%20fn%20handle(%26%27a%20mut%20self)%20-%3E%20%26%27a%20mut%20TaskHandle%7B%0A%20%20%20%20%20%20%20%20self.next().unwrap()%0A%20%20%20%20%7D%0A%7D%0A%0Astruct%20IntoTask%3B%0A%0Aimpl%20IntoTask%7B%0A%20%20%20%20%2F%2F%20Maybe%20this%20should%20return%20an%20Iterator%3Cimpl%20Fn%3E%0A%20%20%20%20%2F%2F%20https%3A%2F%2Fdocs.rs%2Ffutures%2Flatest%2Ffutures%2Fstream%2Ftrait.Stream.html%0A%20%20%20%20fn%20task%3C%27a%2C%20H%3A%20TaskHandleProvider%3C%27a%3E%3E(%26self%2C%20handle%3A%20H)-%3E%20impl%20Fn()%7B%0A%20%20%20%20%20%20%20%20move%20%7C%7Cprintln!(%22ok%22)%0A%20%20%20%20%7D%0A%7D%0A%0Afn%20spawn%3CF%3A%20Fn()%2C%20T%3A%20Fn(TaskHandle)-%3EF%3E(task%3A%20T)%7B%0A%20%20%20%20task(TaskHandle)()%0A%7D%0A%0Afn%20main()%7B%0A%20%20%20%20let%20a%20%3D%20IntoTask%3B%0A%20%20%20%20for%20n%20in%200..10%7B%0A%20%20%20%20%20%20%20%20spawn(%7Chandle%7Ca.task(handle))%0A%20%20%20%20%7D%0A%7D%0A%0A%0A%2F%2F%20Synchronous%20reusability%20is%20the%20same%20as%3A%0A%2F%2F%20fn(task)%7B%0A%2F%2F%20%20%20parent.send(handle.branch(task).hint(KeepLocal))%3B%0A%2F%2F%20%20%20parent.poll%0A%2F%2F%20%7D%0A%2F%2F%0A%2F%2F%20It%20would%20ever%20make%20sence%20to%20do%20this%20over%20a%20network%2C%0A%2F%2F%20as%20the%20executor%20would%20never%20be%20able%20to%20re-distribute%20the%20task%20to%20a%20new%20device%0A%2F%2F%20whihch%20itself%20would%20never%20have%20enough%20overhead%20(compared%20to%20the%20networking%20of%20sending%20data)%0A%2F%2F%20to%20actually%20justify%20not%20doing%20it.%0A%2F%2F%0A%2F%2F%20Thus%20it%20would%20always%20be%20better%20to%20just%20branch%20in%20a%20loop.%0A%2F%2F%20%0A%2F%2F%20Given%20that%20it%20can%20be%20avoided%20to%20run%20setup%20multiple%20times.
 
-#![feature(new_uninit, future_join, type_alias_impl_trait)]
+#![feature(
+    new_uninit,
+    future_join,
+    type_alias_impl_trait,
+    const_type_name,
+    trait_alias
+)]
 
 use branch::OptHint;
 use buffer::{RAW, SERIALIZED};
@@ -46,6 +55,7 @@ use internal_utils::*;
 use primitives::Array;
 use serde::{Deserialize, Serialize};
 use std::{
+    any::type_name,
     future::Future,
     marker::PhantomData,
     pin::Pin,
@@ -79,7 +89,13 @@ pub type BoxFuture<'a> = Pin<Box<dyn Future<Output = ()> + Unpin + 'a>>;
 //      fn work(&mut self, handle: TaskHandle<'a, O>) -> Work<'a>;
 // }
 // ```
-pub trait Task<'a, O: MorphicIO<'a>>: FnOnce(TaskHandle<'a, O>) -> Work<'a> {}
+//pub trait Task<'a, O: MorphicIO<'a>>: FnOnce(TaskHandle<'a, O>) -> Work<'a> {
+//    const NAME: &'static str = type_name::<Self>();
+//}
+
+// This might have to be a trait (or Fn), instead of a function pointer,
+// to guarantee that it is possible to build an efficient ad-graph on top.
+pub trait Task<'a, O: MorphicIO<'a>> = Fn(TaskHandle<'a, O>) -> Work<'a>;
 
 pub trait StaticIteratorTask<'a, O: MorphicIO<'a>, const ITERATIONS: usize>:
     FnOnce(TaskHandle<'a, Array<O, ITERATIONS>>) -> Work<'a>
@@ -173,6 +189,7 @@ const ROOT_EDGE: Edge<'static> = Edge {
 // if it can be done more efficiently like that.
 // Otherwise it should just reconstrukt the node for every iteration.
 pub struct TaskNode<'a> {
+    // TODO: Maybe a name field, for debugging. Should just be `type_name::<F: Task>()`
     future: BoxFuture<'a>,
     children: usize,
     edge: Edge<'a>,

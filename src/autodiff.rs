@@ -43,6 +43,9 @@
 //! - [ ] Pre-allocation of needed memory for entire graph
 //! - [ ] Parallele matrix multiplication
 
+// I wonder if theres a way to split up computation of a neural-net
+// (or specific neural net types) into parralel lines...
+
 use crate::{Result, TaskNode};
 use std::marker::PhantomData;
 

@@ -1,10 +1,16 @@
 use crate::{MorphicIO, Result};
 use std::{any::type_name, intrinsics::transmute, marker::PhantomData};
 
-pub enum Source<'a, O> {
+pub enum Source<'a, O>
+where
+    Self: 'a,
+{
+    // Ready
     Serialized(Vec<u8>),
     Raw(O),
+    // Pending
     Uninitialized(PhantomData<&'a O>),
+    // Can never be ready
     Const,
 }
 

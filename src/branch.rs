@@ -138,6 +138,22 @@ impl<'a, F: Task<'a, O>, O: MorphicIO<'a>> Builder<'a, F, O> {
 impl<'a, F: Task<'a, O>, O: MorphicIO<'a>> Future for Builder<'a, F, O> {
     type Output = Result<'a, O>;
 
+    // # Recursive executor
+    // The executor should be contain in the branch.
+    // There are two graphs, one for data and one for polling.
+    // This should figure out if we should:
+    // - continuously poll same task until its ready.
+    // - poll parent when child is pending.
+    // - assign to thread pool, and let child poll parent when its done.
+    // - poll some network stuff mby.
+    // - Do something completely different?
+
+    // Synchronous reusability can always be executed thread localy
+    // a -poll-> b
+    // b -retu-> a
+    // b -poll-> a
+    // a use value from b
+    // a -poll-> b
     fn poll(
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
