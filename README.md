@@ -2,7 +2,7 @@
 <h1> metalmorphosis </h1>
 </div>
 
-## Definitions
+### Definitions
 - Symbol: a type used to refer to a node,
   that can be bound to another node, returning a future to the output of a node.
   (it lets you specify edges in the computation graph)
@@ -11,7 +11,7 @@
 `graph.attach_edge(Self::edge(graph));`,
 `graph.spawn(F(Self::edge(graph)));`.
 
-## TODO
+### TODO
 - [ ] type checking
 - [ ] awaiting nodes (buffer stuff, etc)
 - [ ] runnable (executor)
@@ -21,5 +21,5 @@
     - reusing output in node would confuse executor
 - [ ] Benchmark distributed
 
-## Extra
+### Extra
 - Allocator reusablility for dynamic graphs
