@@ -1,325 +1,184 @@
-//! <div align="center">
-//! <h1> metalmorphosis </h1>
-//! </div>
+//! # Definitions
+//! - Symbol: a name used to refer to a node. A future to the output of a node
+//!   This has a concept of scope,
+//!   meaning a given symbol might not refer to the same value in all nodes.
 //!
-//! Distributed async runtime in rust, with a focus on being able to build computation graphs (specifically auto-diff).
+//! - Dealocks will be caused by:
+//! `graph.attach_edge(Self::edge(graph));`
+//! `graph.spawn(F(Self::edge(graph)));`
 //!
-//! examples can be found in examples directory.
+//! # TODO
+//! - [ ] type checking
+//! - [ ] awaiting nodes (buffer stuff, etc)
+//! - [ ] runnable (executor)
+//! - [ ] Benchmark two-stage blur
+//! - [ ] Distribute (OpenMPI?)
+//!     - don't time awaits inside node
+//!     - reusing output in node would confuse executor
+//! - [ ] Benchmark distributed
 //!
-//! ## Weird place to have a todo list...
-//! - Maybe rename MorphicIO back to Distributed or distributable.
-//! - examples/math.rs (AutoDiff)
-//! - src/network.rs (distribute that bitch)
-//! - I removed wakers again
-//! - Mixed static and dynamic graphs. (Describe location of static node based on displacement from dynamic parent node)
-//! - Node caching
-//!
-//! ## Project timeline
-//! 0. Auto-diff graph (linear algebra mby)
-//! 1. multi-threaded (Static graphs, node caching)
-//! 2. distributed (mio and buffer/executor changes)
-//! 3. Route optimization (also when should caching occur? maybe just tell explicitly when :/)
-//!
-//! ## Distributed pointers
-//! Function side-effects are very inefficient on a distributed system,
-//! as there is no way to directly mutate data on another device.
-//!
-//! The easiest way to handle data return might be with distributed side-effects tho.
-//! Just make buffer::Alias serializable and contain a machine-id.
-//! Then when you want to write to it, it might just send the pointer and data to the machine with the id,
-//! which will then write the data.
-//! This will of course likely only work if the data is in the serialized format.
-//!
-//! it should be possible to do *Prefetching* of distributed pointer values.
-//! Meaning if we know that 'this device' is gonna read from 'other device',
-//! and other device already has the value ready.
-//! then it would make sense to schedule a read from other device,
-//! even tho this device doesn't need the value yet.
-//!
-//! # Implement me
-//! https://play.rust-lang.org/?version=nightly&mode=debug&edition=2021&code=use%20std%3A%3Aops%3A%3A*%3B%0A%0Astruct%20TaskHandle%3B%0A%0Atrait%20TaskHandleProvider%3C%27a%3E%7B%0A%20%20%20%20fn%20handle(%26%27a%20mut%20self)%20-%3E%20%26%27a%20mut%20TaskHandle%3B%0A%7D%0A%0Aimpl%3C%27a%3E%20TaskHandleProvider%3C%27a%3E%20for%20TaskHandle%7B%0A%20%20%20%20%23%5Binline(always)%5D%0A%20%20%20%20fn%20handle(%26%27a%20mut%20self)%20-%3E%20%26%27a%20mut%20Self%7B%0A%20%20%20%20%20%20%20%20self%0A%20%20%20%20%7D%0A%7D%0A%0Aimpl%3C%27a%2C%20I%3A%20Iterator%3CItem%3D%26%27a%20mut%20TaskHandle%3E%3E%20TaskHandleProvider%3C%27a%3E%20for%20I%7B%0A%20%20%20%20%23%5Binline(always)%5D%0A%20%20%20%20fn%20handle(%26%27a%20mut%20self)%20-%3E%20%26%27a%20mut%20TaskHandle%7B%0A%20%20%20%20%20%20%20%20self.next().unwrap()%0A%20%20%20%20%7D%0A%7D%0A%0Astruct%20IntoTask%3B%0A%0Aimpl%20IntoTask%7B%0A%20%20%20%20%2F%2F%20Maybe%20this%20should%20return%20an%20Iterator%3Cimpl%20Fn%3E%0A%20%20%20%20%2F%2F%20https%3A%2F%2Fdocs.rs%2Ffutures%2Flatest%2Ffutures%2Fstream%2Ftrait.Stream.html%0A%20%20%20%20fn%20task%3C%27a%2C%20H%3A%20TaskHandleProvider%3C%27a%3E%3E(%26self%2C%20handle%3A%20H)-%3E%20impl%20Fn()%7B%0A%20%20%20%20%20%20%20%20move%20%7C%7Cprintln!(%22ok%22)%0A%20%20%20%20%7D%0A%7D%0A%0Afn%20spawn%3CF%3A%20Fn()%2C%20T%3A%20Fn(TaskHandle)-%3EF%3E(task%3A%20T)%7B%0A%20%20%20%20task(TaskHandle)()%0A%7D%0A%0Afn%20main()%7B%0A%20%20%20%20let%20a%20%3D%20IntoTask%3B%0A%20%20%20%20for%20n%20in%200..10%7B%0A%20%20%20%20%20%20%20%20spawn(%7Chandle%7Ca.task(handle))%0A%20%20%20%20%7D%0A%7D%0A%0A%0A%2F%2F%20Synchronous%20reusability%20is%20the%20same%20as%3A%0A%2F%2F%20fn(task)%7B%0A%2F%2F%20%20%20parent.send(handle.branch(task).hint(KeepLocal))%3B%0A%2F%2F%20%20%20parent.poll%0A%2F%2F%20%7D%0A%2F%2F%0A%2F%2F%20It%20would%20ever%20make%20sence%20to%20do%20this%20over%20a%20network%2C%0A%2F%2F%20as%20the%20executor%20would%20never%20be%20able%20to%20re-distribute%20the%20task%20to%20a%20new%20device%0A%2F%2F%20whihch%20itself%20would%20never%20have%20enough%20overhead%20(compared%20to%20the%20networking%20of%20sending%20data)%0A%2F%2F%20to%20actually%20justify%20not%20doing%20it.%0A%2F%2F%0A%2F%2F%20Thus%20it%20would%20always%20be%20better%20to%20just%20branch%20in%20a%20loop.%0A%2F%2F%20%0A%2F%2F%20Given%20that%20it%20can%20be%20avoided%20to%20run%20setup%20multiple%20times.
+//! # Extra
+//! - dynamic graphs: a node that might spawn an unknown amount of sub nodes
+//! - Node array: a struct that points to a node and lets you index into the nodes children
+// bunch of stuff: https://play.rust-lang.org/?version=stable&mode=debug&edition=2021&gist=778be5ba4d57087abc788b5901bd780d
+// some dyn shit: https://play.rust-lang.org/?version=stable&mode=debug&edition=2021&code=use%20std%3A%3Aany%3A%3ATypeId%3B%0A%0Astruct%20Symbol%3CT%3E(usize%2C%20PhantomData%3CT%3E)%3B%0A%0Astruct%20Node%3COutput%3E%7B%0A%20%20%20%20this_node%3A%20usize%2C%0A%20%20%20%20readers%3A%20Vec%3Cusize%3E%2C%0A%20%20%20%20output%3A%20Output%2C%0A%7D%0A%0Atrait%20Trace%7B%0A%20%20%20%20fn%20this_node(%26self)%20-%3E%20usize%3B%0A%20%20%20%20fn%20readers(%26self)%20-%3E%20Vec%3Cusize%3E%3B%0A%20%20%20%20fn%20output_type(%26self)%20-%3E%20TypeId%3B%0A%20%20%20%20%0A%20%20%20%20fn%20read%3CT%3E(%26mut%20self%2C%20name%3A%20%26str)%20-%3E%20Symbol%3CT%3E%7B%0A%20%20%20%20%20%20%20%20todo!()%3B%0A%20%20%20%20%7D%0A%7D%0A%0Astruct%20Graph%7B%0A%20%20%20%20nodes%3A%20Vec%3CBox%3Cdyn%20Trace%3E%3E%2C%0A%20%20%20%20is_locked%3A%20bool%2C%20%2F%2F%20any%20nodes%20spawned%20after%20is%20lock%20is%20set%2C%20will%20not%20be%20distributable%0A%7D%0A%0Astruct%20MainNode(*mut%20Graph)%3B%0A%0A%2F*%0Afn%20main()%7B%0A%20%20%20%20Graph%3A%3Anew().main(%7Cm%3A%20MainNode%7C%7B%0A%20%20%20%20%20%20%20%20m.spawn(%22x%22%2C%20Literal(2.3)%2C%20%5B%5D)%3B%0A%20%20%20%20%20%20%20%20m.spawn(%22y%22%2C%20Y%2C%20%5B%22x%22%5D)%3B%0A%20%20%20%20%20%20%20%20m.subgraph(%22mm%22%2C%20matmul)%3B%0A%20%20%20%20%20%20%20%20%2F%2F%20%22mm%22%20can%20only%20be%20a%20matmul%20graph%20tho.%20Not%20necessary%20if%20you%20can%20read%20nodes%20that%20have%20not%20been%20spawned%20yet.%0A%20%20%20%20%20%20%20%20%0A%20%20%20%20%20%20%20%20let%20y%20%3D%20m.read%3A%3A%3Cf32%3E(%22y%22)%3B%0A%20%20%20%20%20%20%20%20let%20x%20%3D%20m.read%3A%3A%3Cf32%3E(%22x%22)%3B%0A%20%20%20%20%20%20%20%20%0A%20%20%20%20%20%20%20%20async%20%7B%0A%20%20%20%20%20%20%20%20%20%20%20%20%2F%2F%20%60for%20n%20in%200..x.next().await%60%20cannot%20be%20concistently%20optimized%0A%20%20%20%20%20%20%20%20%20%20%20%20%2F%2F%20mby%3A%20%60executor.hint(ScalesWith(%7Cs%7C%20s%20*%20x))%60%0A%20%20%20%20%20%20%20%20%20%20%20%20for%20n%20in%200..10%7B%0A%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20let%20y%3A%20f32%20%3D%20y.next().await%3B%0A%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20let%20x%3A%20f32%20%3D%20x.next().await%3B%0A%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20println!(%22%7Bn%7D%3A%20f(%7Bx%7D)%20%3D%20%7By%7D%22)%3B%0A%20%20%20%20%20%20%20%20%20%20%20%20%7D%0A%20%20%20%20%20%20%20%20%20%20%20%20%0A%20%20%20%20%20%20%20%20%20%20%20%20%2F%2F%20Here%20the%20graph%20of%20%22mm%22%20can%20vary%20based%20on%20arguments%20that%20are%20computed%20inside%20async%20block!%0A%20%20%20%20%20%20%20%20%20%20%20%20m.init(%22mm%22%2C%20(10%2C%2010))%3B%0A%20%20%20%20%20%20%20%20%20%20%20%20%2F%2F%20%5E%5E%20Serialize%20and%20send%20arguments%20for%20initializing%20%22mm%22%20to%20all%20devices.%0A%20%20%20%20%20%20%20%20%20%20%20%20%2F%2F%20Initializing%20graph%20needs%20to%20be%20pure.%0A%20%20%20%20%20%20%20%20%7D%0A%20%20%20%20%7D)%0A%7D*%2F%0A%0A%0Atrait%20Symbolize%3CT%3E%7B%0A%20%20%20%20fn%20symbol(%26self)%20-%3E%20Symbol%3CT%3E%3B%20%20%20%20%0A%7D%0A%0A%0Aimpl%3CT%3E%20Symbolize%3CT%3E%20for%20Node%3CT%3E%7B%0A%20%20%20%20fn%20symbol(%26self)%20-%3E%20Symbol%3CT%3E%7B%0A%20%20%20%20%20%20%20%20Symbol(self.this_node)%0A%20%20%20%20%7D%0A%7D%0A%0A
 
-#![feature(
-    new_uninit,
-    future_join,
-    type_alias_impl_trait,
-    const_type_name,
-    trait_alias
-)]
+#![cfg(test)]
+#![feature(test)]
 
-use branch::OptHint;
-use buffer::{RAW, SERIALIZED};
-use dashmap::DashMap;
-use error::*;
-use internal_utils::*;
-use primitives::Array;
-use serde::{Deserialize, Serialize};
-use std::{
-    any::type_name,
-    future::Future,
-    marker::PhantomData,
-    pin::Pin,
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
-    },
-    task::{Context, Poll, Wake, Waker},
-};
-
-pub mod autodiff;
+//mod buffer;
 mod buffer;
-pub mod error;
-pub mod executor;
-//mod static_graph;
-//mod network;
-mod branch;
-mod internal_utils;
-mod primitives;
+mod error;
 
-pub type BoxFuture<'a> = Pin<Box<dyn Future<Output = ()> + Unpin + 'a>>;
+use error::{Error, Result};
 
-// Functions in rust are stupid. Cant do multiple dispatch the cool way eg: fn bruh(a: f32); fn bruh(a: &str)
-// ```rust
-// trait Task<'a, O: MorphicIO<'a>>: MorphicIO<'a>{
-//      fn hint() -> Hint{
-//          How many childre we have?
-//          How many bytes should be preallocated?
-//          Then combine this with some hints from the parent. And send that bitch to the executor.
-//      }
-//      fn work(&mut self, handle: TaskHandle<'a, O>) -> Work<'a>;
-// }
-// ```
-//pub trait Task<'a, O: MorphicIO<'a>>: FnOnce(TaskHandle<'a, O>) -> Work<'a> {
-//    const NAME: &'static str = type_name::<Self>();
-//}
+use std::future::Future;
+use std::marker::{PhantomData, PhantomPinned};
+use std::sync::atomic::AtomicUsize;
 
-// This might have to be a trait (or Fn), instead of a function pointer,
-// to guarantee that it is possible to build an efficient ad-graph on top.
-pub trait Task<'a, O: MorphicIO<'a>> = Fn(TaskHandle<'a, O>) -> Work<'a>;
-
-pub trait StaticIteratorTask<'a, O: MorphicIO<'a>, const ITERATIONS: usize>:
-    FnOnce(TaskHandle<'a, Array<O, ITERATIONS>>) -> Work<'a>
-{
-}
-
-pub trait HeapIteratorTask<'a, O: MorphicIO<'a>>:
-    FnOnce(TaskHandle<'a, Vec<O>>) -> Work<'a>
-{
-}
-
-// FIXME: Doubt this is possible. How we supposed to reserve on a hashmap like this?
-// This needs to be tested.
-pub struct TaskGraph<'a> {
-    reserved: AtomicUsize,
-    nodes: DashMap<usize, TaskNode<'a>>,
-}
-
-impl<'a> TaskGraph<'a> {
-    fn push(self: Arc<Self>, program: Work<'a>, edge: &mut Edge<'a>) {
-        edge.this_node = self.reserved.fetch_add(1, Ordering::SeqCst);
-        if self
-            .nodes
-            .insert(
-                edge.this_node,
-                TaskNode {
-                    future: program.extremely_unsafe_type_conversion(),
-                    children: 0,
-                    edge: *edge,
-                },
-            )
-            .is_some()
-        {
-            // TODO: This should probably return an error instead.
-            println!("Existing task_node was overwritten 😬")
-        };
-    }
-
-    fn reserve(self: Arc<Self>, nodes: usize) -> usize {
-        if self.nodes.try_reserve(nodes).is_err() {
-            // TODO: This should probably return an error instead.
-            println!("Unable to reserve nodes (Mby DashMap ain't it)")
-        };
-        self.reserved.fetch_add(1, Ordering::SeqCst)
-    }
-
-    fn new() -> Arc<Self> {
-        Arc::new(Self {
-            reserved: AtomicUsize::new(0),
-            nodes: DashMap::new(),
-        })
-    }
-}
-
-impl<'a> std::ops::Index<usize> for TaskGraph<'a> {
-    type Output = TaskNode<'a>;
-
-    fn index(&self, index: usize) -> &Self::Output {
-        &self.nodes.get(&index).unwrap()
-    }
-}
-
-/*
-pub struct SignalWaker<T: Program>(usize, Sender<Signal<T>>);
-
-impl<T: Program> Wake for SignalWaker<T> {
-
-    fn wake(self: Arc<Self>) {
-        (*self).1.send(Signal::Wake(self.0)).unwrap()
-    }
-}
-*/
-
+// Should be a ref to the buffer, instead of usize.
+// Should impl Future with #[always_use]
+// the bool is if it has already been locked. So its not locked in a loop. (attached)
 #[derive(Clone, Copy)]
-pub struct Edge<'a> {
+struct Symbol<T, const LOCK: bool = false>(usize, PhantomData<T>);
+
+struct Node {
+    task: fn(&mut Node) -> Box<dyn Future<Output = ()>>,
+    // cant keep future here if it should be possible to iterate in parallel.
+    future: Option<Box<dyn Future<Output = ()>>>,
+    readers: Vec<usize>,
+    rc: AtomicUsize, // Should be in buffer.
     this_node: usize,
-    parent: usize,
-    output: buffer::Alias<'a>,
-    opt_hint: OptHint,
+    iteration: usize,
+    buffer: (),
 }
 
-const ROOT_EDGE: Edge<'static> = Edge {
-    this_node: 0,
-    parent: 0,
-    output: null_alias!(),
-    opt_hint: OptHint::default(),
-};
+impl Node {
+    fn new(this_node: usize) -> Self {
+        Node {
+            this_node,
+            task: |_| Box::new(async {}),
+            future: None,
+            readers: vec![],
+            rc: AtomicUsize::from(0),
+            iteration: 0,
+            buffer: (),
+        }
+    }
 
-// TODO: There should be some concept of a reusable node, that can do the same thing multiple times.
-// All nodes should be reusable, but they should be able to implement the looping themselves,
-// if it can be done more efficiently like that.
-// Otherwise it should just reconstrukt the node for every iteration.
-pub struct TaskNode<'a> {
-    // TODO: Maybe a name field, for debugging. Should just be `type_name::<F: Task>()`
-    future: BoxFuture<'a>,
-    children: usize,
-    edge: Edge<'a>,
-}
-
-struct NullWaker;
-
-impl Wake for NullWaker {
-    fn wake(self: Arc<Self>) {
+    fn ret(&mut self) {
         todo!()
     }
 }
 
-pub struct TaskHandle<'a, T: MorphicIO<'a>> {
-    // Maybe this should also include a reference to its corresponding TaskNode?
-    sender: Arc<TaskGraph<'a>>,
-    edge: Edge<'a>,
-    phantom_data: PhantomData<T>,
-    // TODO: Make sure you dont insert a task into a spot that already contains a running task.
-    preallocated_children: usize,
+struct Graph {
+    // If this allocator is made reusable between graphs,
+    // it would be safe to create a new graph inside an async block
+    // and return a locked symbol from it.
+    bump: bumpalo::Bump,
+    nodes: Vec<Node>,
+    calling: usize,
+    marker: PhantomPinned,
 }
 
-impl<'a> TaskNode<'a> {
-    pub fn poll(&mut self) -> Poll<()> {
-        Pin::new(&mut self.future).poll(&mut Context::from_waker(&Waker::from(Arc::new(NullWaker))))
+impl Graph {
+    // attaches edge to self.
+    fn attach_edge<T>(&mut self, s: Symbol<T>) -> Symbol<T, true> {
+        self.nodes[s.0].readers.push(self.calling);
+        // TODO: dont fetch add here. Instead set `node.rc` to `node.readers.len()` when calling `node.task`
+        self.nodes[s.0]
+            .rc
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Symbol(s.0, s.1)
     }
-}
 
-impl<'a, T: MorphicIO<'a>> TaskHandle<'a, T> {
-    /// Return data from task to parent.
+    // should take a buffer as arg, which will used when creating the new tasks symbol.
+    fn spawn<T: Task>(&mut self, task: T) -> T::InitOutput {
+        let id = self.calling;
+        self.calling = self.nodes.len();
+        self.nodes.push(Node::new(self.calling));
+        let ret = task.init(self);
+        self.calling = id;
+        ret
+    }
 
-    pub fn output(self, o: T) -> Result<'a, ()> {
-        unsafe {
-            let buffer = self.edge.output.attach_type();
-            if T::IS_COPY && !self.edge.opt_hint.serialize {
-                // Raw data (just move it)
-                buffer.set_data_format::<RAW>()
-            } else {
-                // Serialized data
-                buffer.set_data_format::<SERIALIZED>()
-            }
-            Ok(buffer.write(o)?)
+    fn new() -> Self {
+        Graph {
+            bump: bumpalo::Bump::new(),
+            nodes: vec![],
+            calling: 0,
+            marker: PhantomPinned,
         }
     }
 
-    // Should be able to take an iterator of programs,
-    // that also describe edges,
-    // that way we can just append a whole existing graph at once.
-    //
-    // Maybe branches should be unsafe?
-    pub async fn branch<F: Task<'a, O>, O: MorphicIO<'a>>(
-        &self,
-        program: F,
-    ) -> branch::Builder<'a, F, O> {
-        branch::Builder::new(self, program)
-    }
+    //fn new_buffer(&mut self) ->
+}
 
-    pub fn new_edge(&self) -> Edge<'a> {
-        Edge {
-            output: null_alias!(),
-            // NOTE: self.this_node is used here, but is not properly initialized (branch.rs).
-            parent: self.edge.this_node,
-            opt_hint: OptHint::default(),
-            // This may cause trouble in the future...
-            this_node: 0,
+// let ret = graph.new_buffer();
+// let symbol: Symbol(usize) = graph.spawn(F(...), ret);
+// let symbol: Symbol(ptr) = symbol.lock();
+// graph.task(|_|async{ return symbol.await })
+
+trait Task {
+    type InitOutput;
+    type Output;
+    fn init(self, graph: &mut Graph) -> Self::InitOutput;
+    fn edge(graph: &mut Graph) -> Symbol<Self::Output> {
+        Symbol(graph.calling, PhantomData)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    extern crate test;
+    use test::black_box;
+    use test::Bencher;
+
+    use crate::*;
+    struct X;
+    impl Task for X {
+        type InitOutput = Symbol<f32>;
+        type Output = f32;
+        fn init(self, graph: &mut Graph) -> Self::InitOutput {
+            // graph.task(|_|async{2.});
+            Self::edge(graph)
         }
     }
 
-    // This is gonna create problems in the future (haha thats a type)
-    // if we don't make sure theres some information about which device its from,
-    // and some safety checks.
-    pub fn node_id(&self) -> usize {
-        self.edge.this_node
-    }
-
-    pub async fn attach_tree<O: MorphicIO<'a>>(tree: Vec<TaskNode<'a>>) -> Result<'a, O> {
-        // Husk at `parent` skal shiftes, så det passer med de nye relative positioner i `task_graph`
-        todo!()
+    struct F(Symbol<f32>);
+    impl Task for F {
+        type InitOutput = Symbol<f32>;
+        type Output = f32;
+        fn init(self, graph: &mut Graph) -> Self::InitOutput {
+            let x = graph.attach_edge(self.0);
+            // graph.task(|_| async { x.await * a + b });
+            Self::edge(graph)
+        }
     }
 
     /*
-    pub async fn orphan(&self, this_node: usize) -> TaskNode<'a> {
-        Self {
-            sender: self.sender.clone(),
-            output: todo!(),
-            future: todo!(),
-            parent: self.this_node,
-            this_node,
-            children: 0,
-            opt_hint: todo!(),
+    struct Y(Return<f32>);
+    impl Task for Y {
+        type InitOutput = Symbol<f32>;
+        type Output = f32;
+        fn init(self, graph: &mut Graph) -> Self::InitOutput {
+            let x = graph.spawn(X, graph.new_buffer());
+            let f = graph.spawn(F(x), self.0);
+            //Self::edge(graph)
+            f
         }
+    }*/
+
+    #[test]
+    fn basic() {}
+
+    #[bench]
+    fn spawn_async(b: &mut Bencher) {
+        b.iter(|| {
+            (|n: u32| {
+                //black_box(n + 2);
+                async move { black_box(n + 2) }
+            })(black_box(2))
+        })
     }
-    */
-}
-
-/// Trait that must be implemented for all valued passed between `TaskNode`s.
-///
-/// # Safety
-/// Make sure `IS_COPY` is only true for types that implement copy.
-pub unsafe trait MorphicIO<'a>: 'a + Serialize + Deserialize<'a> + Send + Sync {
-    // Think this while copy thing might be redundant, now that buffer is more safe.
-    // Still defs are some safety concerns to concider.
-    const IS_COPY: bool = false;
-    /// DON'T OVERWRITE THIS FUNCTION.
-    /// Returns a buffer that can fit Self, for use internally.
-    ///
-    /// # Safety
-    /// As long as `IS_COPY` is set correctly, theres no problem.
-
-    unsafe fn buffer() -> Self {
-        if Self::IS_COPY {
-            unsafe { uninit() }
-        } else {
-            panic!("Tried to create buffer for non-copy data")
-        }
-    }
-}
-
-pub struct Work<'a>(Pin<Box<dyn Future<Output = ()> + 'a>>);
-
-impl<'a> Work<'a> {
-    fn extremely_unsafe_type_conversion(self) -> BoxFuture<'a> {
-        unsafe { std::mem::transmute(self.0) }
-    }
-}
-
-pub fn execute<'a>(program: impl FnOnce(TaskHandle<'a, ()>) -> Work<'a>) {
-    executor::Executor::new().run(program).unwrap()
-}
-
-pub fn work<'a>(f: impl Future<Output = ()> + 'a) -> Work<'a> {
-    Work(Box::pin(f))
 }

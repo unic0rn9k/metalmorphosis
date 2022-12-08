@@ -1,119 +1,73 @@
-use crate::{MorphicIO, Result};
-use std::{any::type_name, intrinsics::transmute, marker::PhantomData};
+use crate::error::{Error, Result};
+use std::future::Future;
 
-pub enum Source<'a, O>
-where
-    Self: 'a,
-{
-    // Ready
-    Serialized(Vec<u8>),
-    Raw(O),
-    // Pending
-    Uninitialized(PhantomData<&'a O>),
-    // Can never be ready
-    Const,
+trait Distributable {
+    // Should:
+    // - impl mpi::datatype::Equivalence
+    //   or
+    //   impl Serialize
+    // - and impl Sync
 }
 
-pub struct RcSource<'a, O> {
-    data: Source<'a, O>,
-    rc: u16,
-}
-
-// If rc == 0 && data != uninit { not RC }
-// If rc == 0 && data == UninitRc { rc++ when alias; don't allow read }
-// If rc != 0 && data != uninit { rc-- when read; don't allow write or alias }
-// When rc is enabled, Alias can just straight up be a future.
-
-impl<'a, O> Source<'a, O> {
-    pub fn clear(&mut self) {
-        *self = Self::Uninitialized(PhantomData);
-    }
-    pub fn alias(&mut self) -> Alias<'a> {
-        Alias(self as *mut Source<O> as *mut (), PhantomData)
-    }
-
-    pub fn write(&mut self, o: O) -> Result<'a, ()>
+// TODO: Also needs to take information about what iteration to fetch.
+trait Buffer<T> {
+    type Writing<'a>: Future<Output = Result<&'a mut T>>
     where
-        O: MorphicIO<'a>,
-    {
-        use Source::*;
-        match self {
-            // Maybe this shouldn't just use bincode...
-            Serialized(v) => *v = bincode::serialize(&o)?,
-            Raw(v) => *v = o,
-            _ => panic!("Cannot write to uninitialized or const buffer"),
-        }
-        Ok(())
-    }
-
-    pub fn read(self) -> Result<'a, O>
+        T: 'a;
+    type Reading<'a>: Future<Output = Result<&'a T>>
     where
-        O: MorphicIO<'a>,
-    {
-        use Source::*;
-        Ok(match self {
-            Raw(v) => v,
-            Serialized(v) => unsafe { bincode::deserialize(transmute(&v[..]))? },
-            _ => panic!("Cannot read from uninitialized or const buffer"),
-        })
-    }
+        T: 'a;
 
-    pub fn uninit() -> Self {
-        Self::Uninitialized(PhantomData)
-    }
-
-    fn fmt(&self) -> &'static str {
-        match self {
-            Source::Serialized(_) => "serialized",
-            Source::Raw(_) => "raw",
-            Source::Uninitialized(_) => "uninitialized",
-            Source::Const => "const",
-        }
-    }
-
-    fn is_const(&self) -> bool {
-        match self {
-            Source::Const => true,
-            _ => false,
-        }
-    }
-
-    pub unsafe fn set_data_format<const FORMAT: char>(&mut self)
-    where
-        O: MorphicIO<'a>,
-    {
-        match FORMAT {
-            'r' if O::IS_COPY && !self.is_const() => *self = Self::Raw(O::buffer()),
-            's' if !self.is_const() => *self = Self::Serialized(vec![]),
-            _ => panic!(
-                "Tried to set a {} buffer, of type `{}`, to '{FORMAT}'",
-                self.fmt(),
-                type_name::<O>()
-            ),
-        }
-    }
+    /// Get a refference for writing a result to the buffer.
+    fn get_mut<'a>(&mut self) -> Self::Writing<'a>;
+    /// Mark the result as ready for reading. This should lock the buffer, so it will not be written to again.
+    fn done(&mut self) -> Result<()>;
+    /// Get result from buffer.
+    fn get<'a>(&self) -> Self::Reading<'a>;
 }
 
-// TODO: Mby replace `*mut ()` with `&'b Source<'a, ()>`
-#[derive(Clone, Copy)]
-pub struct Alias<'a>(*mut (), PhantomData<&'a ()>);
+struct WaitAndBleed<T, const W: bool>(*mut TBuffer<T>);
 
-impl<'a> Alias<'a> {
-    pub unsafe fn attach_type<O: MorphicIO<'a>>(&self) -> &mut Source<'a, O> {
-        unsafe { transmute(self.0) }
-    }
-}
+impl<'a, T> Future for WaitAndBleed<T, false> {
+    type Output = Result<&T>;
 
-pub const NULL: Source<'static, ()> = Source::Const;
-
-#[macro_export]
-macro_rules! null_alias {
-    () => {{
-        //#[allow(const_item_mutation)]
-        //buffer::NULL.alias()
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
         todo!()
-    }};
+    }
 }
 
-pub const RAW: char = 'r';
-pub const SERIALIZED: char = 's';
+struct TBuffer<T> {
+    ready: bool,
+    data: T,
+}
+
+impl<T> Buffer<T> for TBuffer<T> {
+    type Writing<'a>
+    where
+        T: 'a;
+
+    type Reading<'a>
+    where
+        T: 'a;
+
+    fn get_mut<'a>(&mut self) -> Self::Writing<'a> {
+        todo!()
+    }
+
+    fn done(&mut self) -> Result<()> {
+        todo!()
+    }
+
+    fn get<'a>(&self) -> Self::Reading<'a> {
+        todo!()
+    }
+}
+
+// TODO: Needs sync (sequential) and async version
+struct MultiBuffer<T> {
+    data: Vec<TBuffer<T>>,
+    iteration: usize,
+}

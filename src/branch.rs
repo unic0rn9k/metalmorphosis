@@ -1,4 +1,4 @@
-use crate::{buffer, error::Result, BoxFuture, Edge, MorphicIO, Task, TaskHandle};
+use crate::{buffer, error::Result, BoxFuture, Edge, MorphicIO, Task, TaskHandle, Work};
 use std::{future::Future, marker::PhantomData, pin::Pin, task::Poll};
 pub use OptHintSingle::*;
 
@@ -79,7 +79,7 @@ pub enum Signal<'a> {
     //Wake(usize),
     Branch {
         // Should just send a TaskNode instead.
-        program: BoxFuture<'a>,
+        program: Work<'a>,
 
         // TODO: Executor needs to atleast set `this_node` correctly.
         // Props also a good idea to do some stuff with opt_hint.
@@ -135,7 +135,7 @@ impl<'a, F: Task<'a, O>, O: MorphicIO<'a>> Builder<'a, F, O> {
 //
 //
 // Otherwise the parent task handle needs to provide it with an allocator to use.
-impl<'a, F: Task<'a, O>, O: MorphicIO<'a>> Future for Builder<'a, F, O> {
+impl<'a, F: Task<'a, O> + Unpin, O: MorphicIO<'a> + Unpin> Future for Builder<'a, F, O> {
     type Output = Result<'a, O>;
 
     // # Recursive executor
@@ -159,7 +159,7 @@ impl<'a, F: Task<'a, O>, O: MorphicIO<'a>> Future for Builder<'a, F, O> {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
         if self.handle.edge.opt_hint.keep_local {
-            self.handle.edge.output = self.buffer.alias();
+            self.get_mut().handle.edge.output = self.buffer.alias();
             let mut future = (self.program)(self.handle).extremely_unsafe_type_conversion();
             let mut status = Pin::new(&mut future).poll(cx);
             while status == Poll::Pending {
@@ -182,12 +182,14 @@ impl<'a, F: Task<'a, O>, O: MorphicIO<'a>> Future for Builder<'a, F, O> {
         self.handle.edge.output = self.buffer.alias();
 
         // Maybe this should be moved up to `new`
-        self.handle.sender.push(
+        self.handle.sender.send(
             // Make a TypedTaskNode to pass as task_handle here.
             // This way we can use type checking inside of program and then convert to untyped task node,
             // that can be passed to executor
-            (self.program)(self.handle),
-            &mut self.handle.edge,
+            Signal::Branch {
+                program: (self.program)(self.handle),
+                edge: &mut self.handle.edge,
+            },
         );
 
         self.has_halted = true;

@@ -19,6 +19,14 @@
 //!
 //! ## All resources are bussy
 //! - wait
+//!
+use crate::{branch::Signal, Result, TaskHandle, TaskNode, Work};
+use bumpalo::{boxed::Box as BumpBox, collections::Vec as BumpVec, Bump};
+use std::{
+    future::Future,
+    sync::mpsc::{self, channel, Receiver, Sender},
+    task::Poll,
+};
 
 enum ResourceAvailability {
     OnlySelf,
@@ -33,49 +41,98 @@ enum DistributionStrategy {
     Wait,
 }
 
-// BashMap playground:
-// https://play.rust-lang.org/?version=stable&mode=debug&edition=2021&code=use%20std%3A%3A%7B%0A%20%20%20%20collections%3A%3AHashMap%2C%0A%20%20%20%20ops%3A%3A%7BDeref%2C%20DerefMut%7D%2C%0A%20%20%20%20sync%3A%3A%7B%0A%20%20%20%20%20%20%20%20atomic%3A%3A%7BAtomicUsize%2C%20Ordering%7D%2C%0A%20%20%20%20%20%20%20%20Arc%2C%0A%20%20%20%20%7D%2C%0A%20%20%20%20thread%2C%0A%7D%3B%0A%0Ause%20spin%3A%3ARwLock%3B%0A%0Astruct%20BashMap%20%7B%0A%20%20%20%20src%3A%20Arc%3CRwLock%3CHashMap%3Cusize%2C%20usize%3E%3E%3E%2C%0A%20%20%20%20len%3A%20AtomicUsize%2C%0A%7D%0A%0Aimpl%20BashMap%20%7B%0A%20%20%20%20fn%20new()%20-%3E%20Self%20%7B%0A%20%20%20%20%20%20%20%20Self%20%7B%0A%20%20%20%20%20%20%20%20%20%20%20%20src%3A%20Arc%3A%3Anew(RwLock%3A%3Anew(HashMap%3A%3Anew()))%2C%0A%20%20%20%20%20%20%20%20%20%20%20%20len%3A%20AtomicUsize%3A%3Anew(0)%2C%0A%20%20%20%20%20%20%20%20%7D%0A%20%20%20%20%7D%0A%0A%20%20%20%20fn%20reserve(%26mut%20self%2C%20capacity%3A%20usize)%20%7B%0A%20%20%20%20%20%20%20%20self.src.write().reserve(capacity)%0A%20%20%20%20%7D%0A%0A%20%20%20%20fn%20insert(%26mut%20self%2C%20k%3A%20usize%2C%20v%3A%20usize)%20%7B%0A%20%20%20%20%20%20%20%20let%20delta%20%3D%0A%20%20%20%20%20%20%20%20%20%20%20%20self.read().capacity()%20as%20isize%20-%20self.len.fetch_add(1%2C%20Ordering%3A%3ASeqCst)%20as%20isize%3B%0A%20%20%20%20%20%20%20%20if%20delta%20%3C%201%20%7B%0A%20%20%20%20%20%20%20%20%20%20%20%20print!(%22Reserving%20delta%20for%20%7Bk%7D...%20%22)%3B%0A%20%20%20%20%20%20%20%20%20%20%20%20self.reserve((1%20-%20delta)%20as%20usize)%3B%0A%20%20%20%20%20%20%20%20%20%20%20%20println!(%22%20ok%22)%3B%0A%20%20%20%20%20%20%20%20%7D%0A%0A%20%20%20%20%20%20%20%20let%20reader%20%3D%20self.src.read()%3B%0A%20%20%20%20%20%20%20%20unsafe%20%7B%0A%20%20%20%20%20%20%20%20%20%20%20%20%23%5Ballow(mutable_transmutes)%5D%0A%20%20%20%20%20%20%20%20%20%20%20%20let%20leak%3A%20%26mut%20HashMap%3Cusize%2C%20usize%3E%20%3D%0A%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20std%3A%3Amem%3A%3Atransmute(spin%3A%3ARwLockReadGuard%3A%3Aleak(self.src.read()))%3B%0A%20%20%20%20%20%20%20%20%20%20%20%20%2F%2Flet%20mut%20leak%20%3D%20self.src.write()%3B%0A%20%20%20%20%20%20%20%20%20%20%20%20leak.insert(k%2C%20v)%3B%0A%20%20%20%20%20%20%20%20%7D%0A%20%20%20%20%20%20%20%20drop(reader)%0A%20%20%20%20%7D%0A%0A%20%20%20%20fn%20handle(%26mut%20self)%20-%3E%20BashRef%20%7B%0A%20%20%20%20%20%20%20%20BashRef(self%20as%20*mut%20Self)%0A%20%20%20%20%7D%0A%7D%0A%0Aimpl%20Deref%20for%20BashMap%20%7B%0A%20%20%20%20type%20Target%20%3D%20RwLock%3CHashMap%3Cusize%2C%20usize%3E%3E%3B%0A%0A%20%20%20%20fn%20deref(%26self)%20-%3E%20%26Self%3A%3ATarget%20%7B%0A%20%20%20%20%20%20%20%20%26self.src%0A%20%20%20%20%7D%0A%7D%0A%0A%23%5Bderive(Copy%2C%20Clone)%5D%0Astruct%20BashRef(*mut%20BashMap)%3B%0A%0Aimpl%20Deref%20for%20BashRef%20%7B%0A%20%20%20%20type%20Target%20%3D%20BashMap%3B%0A%0A%20%20%20%20fn%20deref(%26self)%20-%3E%20%26Self%3A%3ATarget%20%7B%0A%20%20%20%20%20%20%20%20unsafe%20%7B%20%26*self.0%20%7D%0A%20%20%20%20%7D%0A%7D%0A%0Aimpl%20DerefMut%20for%20BashRef%20%7B%0A%20%20%20%20fn%20deref_mut(%26mut%20self)%20-%3E%20%26mut%20Self%3A%3ATarget%20%7B%0A%20%20%20%20%20%20%20%20unsafe%20%7B%20%26mut%20*self.0%20%7D%0A%20%20%20%20%7D%0A%7D%0A%0Aunsafe%20impl%20std%3A%3Amarker%3A%3ASend%20for%20BashRef%20%7B%7D%0A%0Aconst%20TEST_SIZE%3A%20usize%20%3D%202000%3B%0Afn%20main()%20%7B%0A%20%20%20%20let%20mut%20handle%20%3D%20BashMap%3A%3Anew()%3B%0A%20%20%20%20let%20mut%20handle%20%3D%20handle.handle()%3B%0A%0A%20%20%20%20%2F%2F%20Only%20works%20with%20this%20line.%0A%20%20%20%20%2F%2Fbruh.reserve(200)%3B%0A%0A%20%20%20%20let%20t1%20%3D%20thread%3A%3Aspawn(move%20%7C%7C%20%7B%0A%20%20%20%20%20%20%20%20for%20n%20in%200..TEST_SIZE%20%7B%0A%20%20%20%20%20%20%20%20%20%20%20%20handle.insert(n%20*%202%2C%20n)%3B%0A%20%20%20%20%20%20%20%20%7D%0A%20%20%20%20%7D)%3B%0A%0A%20%20%20%20for%20n%20in%200..TEST_SIZE%20%7B%0A%20%20%20%20%20%20%20%20handle.insert(n%20*%202%20%2B%201%2C%20n)%3B%0A%20%20%20%20%7D%0A%0A%20%20%20%20t1.join().unwrap()%3B%0A%0A%20%20%20%20let%20mut%20failed%20%3D%200%3B%0A%0A%20%20%20%20for%20n%20in%200..TEST_SIZE%20%7B%0A%20%20%20%20%20%20%20%20print!(%22Checking%20%7Bn%7D...%20%22)%3B%0A%20%20%20%20%20%20%20%20let%20read%20%3D%20handle.read()%3B%0A%20%20%20%20%20%20%20%20let%20a%20%3D%20read.get(%26(n%20*%202))%3B%0A%20%20%20%20%20%20%20%20let%20b%20%3D%20read.get(%26(n%20*%202%20%2B%201))%3B%0A%20%20%20%20%20%20%20%20if%20a%20%3D%3D%20Some(%26n)%20%26%26%20b%20%3D%3D%20Some(%26n)%20%7B%0A%20%20%20%20%20%20%20%20%20%20%20%20println!(%22Ok%22)%0A%20%20%20%20%20%20%20%20%7D%20else%20%7B%0A%20%20%20%20%20%20%20%20%20%20%20%20println!(%22Failed%3B%20Found%20%7Ba%3A%3F%7D%2C%20%7Bb%3A%3F%7D%22)%3B%0A%20%20%20%20%20%20%20%20%20%20%20%20failed%20%2B%3D%201%3B%0A%20%20%20%20%20%20%20%20%7D%0A%20%20%20%20%7D%0A%0A%20%20%20%20println!(%22Failed%20%7B%3A.2%7D%25%22%2C%20failed%20as%20f32%20*%20100.%20%2F%20TEST_SIZE%20as%20f32)%3B%0A%7D%0A%0Atrait%20Task%3CT%3A%20Sized%3E%7B%0A%20%20%20%20type%20Input%3A%20Sized%3B%0A%20%20%20%20fn%20hide_par_type(f%3A%20fn(Self%3A%3AInput))%0A%20%20%20%20%20%20%20%20-%3E%20fn%3CT%3E(T)%3B%0A%7D
+// Let handle take ownership of a range of nodes (a..b).
+// Then handle.insert(3, smth) will be the same as map.insert(a+3, smth).
+//
+// I think it would be usefull to add a push method,
+// so that we can still insert more than b-a elements into map.
+//
+// insertions should try to insert into a node from map.deallocated,
+// if the queue is empty, send a branch to executor.
+// This will not work with mpsc (should be mpmc).
+pub struct MapHandle<'a> {
+    map: *mut Map<'a>,
+}
+
+unsafe impl<'a> std::marker::Send for MapHandle<'a> {}
+
+pub enum Node<'a> {
+    DynamicNode(TaskNode<'a>),
+    //StaticNode(std::sync::Arc<dyn StaticGraph>),
+}
+
+/// A HashMap that specializes in cases where:
+/// - the key is a usize,
+/// - insertion indices are always going to be rising linearly,
+/// - parallel insertions would be nice.
+///
+/// Attempt to parralelize completely:
+/// https://play.rust-lang.org/?version=stable&mode=debug&edition=2021&code=use%20std%3A%3A%7B%0A%20%20%20%20collections%3A%3AHashMap%2C%0A%20%20%20%20ops%3A%3A%7BDeref%2C%20DerefMut%7D%2C%0A%20%20%20%20sync%3A%3A%7B%0A%20%20%20%20%20%20%20%20atomic%3A%3A%7BAtomicUsize%2C%20Ordering%7D%2C%0A%20%20%20%20%20%20%20%20Arc%2C%0A%20%20%20%20%7D%2C%0A%20%20%20%20thread%2C%0A%7D%3B%0A%0Ause%20spin%3A%3ARwLock%3B%0A%0Astruct%20BashMap%20%7B%0A%20%20%20%20src%3A%20Arc%3CRwLock%3CHashMap%3Cusize%2C%20usize%3E%3E%3E%2C%0A%20%20%20%20len%3A%20AtomicUsize%2C%0A%7D%0A%0Aimpl%20BashMap%20%7B%0A%20%20%20%20fn%20new()%20-%3E%20Self%20%7B%0A%20%20%20%20%20%20%20%20Self%20%7B%0A%20%20%20%20%20%20%20%20%20%20%20%20src%3A%20Arc%3A%3Anew(RwLock%3A%3Anew(HashMap%3A%3Anew()))%2C%0A%20%20%20%20%20%20%20%20%20%20%20%20len%3A%20AtomicUsize%3A%3Anew(0)%2C%0A%20%20%20%20%20%20%20%20%7D%0A%20%20%20%20%7D%0A%0A%20%20%20%20fn%20reserve(%26mut%20self%2C%20capacity%3A%20usize)%20%7B%0A%20%20%20%20%20%20%20%20self.src.write().reserve(capacity)%0A%20%20%20%20%7D%0A%0A%20%20%20%20fn%20insert(%26mut%20self%2C%20k%3A%20usize%2C%20v%3A%20usize)%20%7B%0A%20%20%20%20%20%20%20%20let%20delta%20%3D%0A%20%20%20%20%20%20%20%20%20%20%20%20self.read().capacity()%20as%20isize%20-%20self.len.fetch_add(1%2C%20Ordering%3A%3ASeqCst)%20as%20isize%3B%0A%20%20%20%20%20%20%20%20if%20delta%20%3C%201%20%7B%0A%20%20%20%20%20%20%20%20%20%20%20%20print!(%22Reserving%20delta%20for%20%7Bk%7D...%20%22)%3B%0A%20%20%20%20%20%20%20%20%20%20%20%20self.reserve((1%20-%20delta)%20as%20usize)%3B%0A%20%20%20%20%20%20%20%20%20%20%20%20println!(%22%20ok%22)%3B%0A%20%20%20%20%20%20%20%20%7D%0A%0A%20%20%20%20%20%20%20%20let%20reader%20%3D%20self.src.read()%3B%0A%20%20%20%20%20%20%20%20unsafe%20%7B%0A%20%20%20%20%20%20%20%20%20%20%20%20%23%5Ballow(mutable_transmutes)%5D%0A%20%20%20%20%20%20%20%20%20%20%20%20let%20leak%3A%20%26mut%20HashMap%3Cusize%2C%20usize%3E%20%3D%0A%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20std%3A%3Amem%3A%3Atransmute(spin%3A%3ARwLockReadGuard%3A%3Aleak(self.src.read()))%3B%0A%20%20%20%20%20%20%20%20%20%20%20%20%2F%2Flet%20mut%20leak%20%3D%20self.src.write()%3B%0A%20%20%20%20%20%20%20%20%20%20%20%20leak.insert(k%2C%20v)%3B%0A%20%20%20%20%20%20%20%20%7D%0A%20%20%20%20%20%20%20%20drop(reader)%0A%20%20%20%20%7D%0A%0A%20%20%20%20fn%20handle(%26mut%20self)%20-%3E%20BashRef%20%7B%0A%20%20%20%20%20%20%20%20BashRef(self%20as%20*mut%20Self)%0A%20%20%20%20%7D%0A%7D%0A%0Aimpl%20Deref%20for%20BashMap%20%7B%0A%20%20%20%20type%20Target%20%3D%20RwLock%3CHashMap%3Cusize%2C%20usize%3E%3E%3B%0A%0A%20%20%20%20fn%20deref(%26self)%20-%3E%20%26Self%3A%3ATarget%20%7B%0A%20%20%20%20%20%20%20%20%26self.src%0A%20%20%20%20%7D%0A%7D%0A%0A%23%5Bderive(Copy%2C%20Clone)%5D%0Astruct%20BashRef(*mut%20BashMap)%3B%0A%0Aimpl%20Deref%20for%20BashRef%20%7B%0A%20%20%20%20type%20Target%20%3D%20BashMap%3B%0A%0A%20%20%20%20fn%20deref(%26self)%20-%3E%20%26Self%3A%3ATarget%20%7B%0A%20%20%20%20%20%20%20%20unsafe%20%7B%20%26*self.0%20%7D%0A%20%20%20%20%7D%0A%7D%0A%0Aimpl%20DerefMut%20for%20BashRef%20%7B%0A%20%20%20%20fn%20deref_mut(%26mut%20self)%20-%3E%20%26mut%20Self%3A%3ATarget%20%7B%0A%20%20%20%20%20%20%20%20unsafe%20%7B%20%26mut%20*self.0%20%7D%0A%20%20%20%20%7D%0A%7D%0A%0Aunsafe%20impl%20std%3A%3Amarker%3A%3ASend%20for%20BashRef%20%7B%7D%0A%0Aconst%20TEST_SIZE%3A%20usize%20%3D%202000%3B%0Afn%20main()%20%7B%0A%20%20%20%20let%20mut%20handle%20%3D%20BashMap%3A%3Anew()%3B%0A%20%20%20%20let%20mut%20handle%20%3D%20handle.handle()%3B%0A%0A%20%20%20%20%2F%2F%20Only%20works%20with%20this%20line.%0A%20%20%20%20%2F%2Fbruh.reserve(200)%3B%0A%0A%20%20%20%20let%20t1%20%3D%20thread%3A%3Aspawn(move%20%7C%7C%20%7B%0A%20%20%20%20%20%20%20%20for%20n%20in%200..TEST_SIZE%20%7B%0A%20%20%20%20%20%20%20%20%20%20%20%20handle.insert(n%20*%202%2C%20n)%3B%0A%20%20%20%20%20%20%20%20%7D%0A%20%20%20%20%7D)%3B%0A%0A%20%20%20%20for%20n%20in%200..TEST_SIZE%20%7B%0A%20%20%20%20%20%20%20%20handle.insert(n%20*%202%20%2B%201%2C%20n)%3B%0A%20%20%20%20%7D%0A%0A%20%20%20%20t1.join().unwrap()%3B%0A%0A%20%20%20%20let%20mut%20failed%20%3D%200%3B%0A%0A%20%20%20%20for%20n%20in%200..TEST_SIZE%20%7B%0A%20%20%20%20%20%20%20%20print!(%22Checking%20%7Bn%7D...%20%22)%3B%0A%20%20%20%20%20%20%20%20let%20read%20%3D%20handle.read()%3B%0A%20%20%20%20%20%20%20%20let%20a%20%3D%20read.get(%26(n%20*%202))%3B%0A%20%20%20%20%20%20%20%20let%20b%20%3D%20read.get(%26(n%20*%202%20%2B%201))%3B%0A%20%20%20%20%20%20%20%20if%20a%20%3D%3D%20Some(%26n)%20%26%26%20b%20%3D%3D%20Some(%26n)%20%7B%0A%20%20%20%20%20%20%20%20%20%20%20%20println!(%22Ok%22)%0A%20%20%20%20%20%20%20%20%7D%20else%20%7B%0A%20%20%20%20%20%20%20%20%20%20%20%20println!(%22Failed%3B%20Found%20%7Ba%3A%3F%7D%2C%20%7Bb%3A%3F%7D%22)%3B%0A%20%20%20%20%20%20%20%20%20%20%20%20failed%20%2B%3D%201%3B%0A%20%20%20%20%20%20%20%20%7D%0A%20%20%20%20%7D%0A%0A%20%20%20%20println!(%22Failed%20%7B%3A.2%7D%25%22%2C%20failed%20as%20f32%20*%20100.%20%2F%20TEST_SIZE%20as%20f32)%3B%0A%7D%0A%0Atrait%20Task%3CT%3A%20Sized%3E%7B%0A%20%20%20%20type%20Input%3A%20Sized%3B%0A%20%20%20%20fn%20hide_par_type(f%3A%20fn(Self%3A%3AInput))%0A%20%20%20%20%20%20%20%20-%3E%20fn%3CT%3E(T)%3B%0A%7D
 pub struct Map<'a> {
-    nodes: Vec<TaskNode<'a>>,
-    indices: Vec<Option<usize>>,
+    alloc: &'a Bump,
+    nodes: BumpVec<'a, BumpBox<'a, Node<'a>>>,
+    indices: BumpVec<'a, Option<usize>>,
+    deallocater: mpsc::Sender<usize>,
+    deallocated: mpsc::Receiver<usize>,
 }
 
 impl<'a> Map<'a> {
-    fn insert(&mut self, idx: usize, node: TaskNode<'a>) {
+    fn new(alloc: &'a Bump) -> Self {
+        let (deallocater, deallocated) = channel();
+        Self {
+            alloc,
+            nodes: BumpVec::new_in(&alloc),
+            indices: BumpVec::new_in(&alloc),
+            deallocated,
+            deallocater,
+        }
+    }
+
+    fn insert(&mut self, idx: usize, node: Node<'a>) {
         if self.indices.len() <= idx {
             self.reserve(idx - self.indices.len() + 1)
         }
 
         if let Some(node) = self.indices[idx] {
-            let name = "Task name"; // TODO: This could be node.name, if the field is added.
+            // Maybe this should queue the insertion of the node,
+            // so it will get inserted once the previous node gets deallocated.
+            let name = format!("node_index:{idx}"); // TODO: This could be node.name, if the field is added.
             panic!("Node collision. {name} already exists")
         }
 
-        self.indices[idx] = Some(self.nodes.len());
-        self.nodes.push(node)
+        let i = if let Ok(i) = self.deallocated.try_recv() {
+            self.nodes[i] = BumpBox::new_in(node, self.alloc);
+            i
+        } else {
+            self.nodes.push(BumpBox::new_in(node, self.alloc));
+            self.nodes.len() - 1
+        };
+
+        self.indices[idx] = Some(i);
+    }
+
+    fn remove(&mut self, idx: usize) {
+        // self.nodes.remove(idx);
+        // If the node is not removed from self.nodes,
+        // then there is no need to have self.indices
+        self.indices[idx] = None;
+        self.deallocater.send(idx);
     }
 
     fn reserve(&mut self, additional_capacity: usize) {
         self.nodes.reserve(additional_capacity);
-        self.indices.append(&mut vec![None; additional_capacity]);
+        self.indices
+            .append(&mut bumpalo::vec![in self.alloc; None; additional_capacity]);
     }
 
-    fn get(&self, idx: usize) -> &TaskNode<'a> {
-        &self.nodes[self.indices[idx].unwrap()]
+    fn get(&self, idx: usize) -> Option<&Node<'a>> {
+        Some(self.nodes.get((*self.indices.get(idx)?)?)?)
     }
 
-    fn get_mut(&mut self, idx: usize) -> &TaskNode<'a> {
-        &mut self.nodes[self.indices[idx].unwrap()]
+    fn get_mut(&mut self, idx: usize) -> Option<&mut Node<'a>> {
+        Some(self.nodes.get_mut((*self.indices.get(idx)?)?)?)
     }
 }
-
-use crate::{branch::Signal, buffer, OptHint, Result, TaskHandle, TaskNode, Work};
-use std::{
-    future::Future,
-    marker::PhantomData,
-    sync::mpsc::{channel, Receiver, Sender},
-    task::Poll,
-};
 
 pub struct Executor<'a> {
     queue: Receiver<Signal<'a>>,
@@ -98,20 +155,7 @@ impl<'a> Executor<'a> {
     }
 
     pub fn run(&mut self, main: impl FnOnce(TaskHandle<'a, ()>) -> Work<'a>) -> Result<'a, ()> {
-        self.branch(Signal::Branch {
-            program: main(TaskHandle {
-                sender: self.self_sender.clone(),
-                output: buffer::null().alias(),
-                this_node: 0,
-                opt_hint: OptHint {
-                    always_serialize: true,
-                },
-                phantom_data: PhantomData,
-            })
-            .extremely_unsafe_type_conversion(),
-            parent: 0,
-            output: buffer::null().alias(),
-        });
+        self.branch(todo!());
         let mut n = 0;
 
         'polling: loop {
@@ -127,11 +171,11 @@ impl<'a> Executor<'a> {
 
             let leaf = &mut self.task_graph[self.leaf_nodes[n]];
             if leaf.poll().is_ready() {
-                if self.leaf_nodes[n] == leaf.parent {
+                if self.leaf_nodes[n] == leaf.edge.parent {
                     // self.task_graph.clear();
                     return Ok(());
                 } else {
-                    let parent = leaf.parent;
+                    let parent = leaf.edge.parent;
                     // This would change the relative indecies of all nodes :(
                     // self.task_graph.remove(leaf.this_node);
                     self.task_graph[parent].children -= 1;
@@ -150,19 +194,18 @@ impl<'a> Executor<'a> {
 
     pub fn branch(&mut self, branch: Signal<'a>) {
         let Signal::Branch {
-            parent,
-            output,
             program,
+            edge,
         } = branch else{todo!()};
 
-        match self.task_graph.get_mut(parent) {
+        match self.task_graph.get_mut(unsafe { *edge }.parent) {
             None => {}
             Some(parent) => parent.children += 1,
         }
 
         // TODO: This does not have to be this slow...
         for n in 0..self.leaf_nodes.len() {
-            if self.leaf_nodes[n] == parent {
+            if self.leaf_nodes[n] == unsafe { *edge }.parent {
                 self.leaf_nodes.remove(n);
                 break;
             }
@@ -170,10 +213,9 @@ impl<'a> Executor<'a> {
 
         self.leaf_nodes.push(self.task_graph.len());
         self.task_graph.push(TaskNode {
-            output,
-            future: program,
-            parent,
-            children: 0,
+            future: todo!(),
+            children: todo!(),
+            edge: todo!(),
             /*opt_hint: OptHint {
                 // Do we need to send data over network?
                 always_serialize: false,
