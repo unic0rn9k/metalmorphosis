@@ -1,9 +1,10 @@
 ## Definitions
-- Symbol: a name used to refer to a node. A future to the output of a node
-  This has a concept of scope,
-  meaning a given symbol might not refer to the same value in all nodes.
+- Symbol: a type used to refer to a node,
+  that can be bound to another node, returning a future to the output of a node.
+  (it lets you specify edges in the computation graph)
 
 - Dealocks will be caused by:
+
 `graph.attach_edge(Self::edge(graph));`
 `graph.spawn(F(Self::edge(graph)));`
 
@@ -18,5 +19,4 @@
 - [ ] Benchmark distributed
 
 ## Extra
-- dynamic graphs: a node that might spawn an unknown amount of sub nodes
-- Node array: a struct that points to a node and lets you index into the nodes children
+- Allocator reusablility for dynamic graphs
