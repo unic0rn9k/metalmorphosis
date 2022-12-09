@@ -1,6 +1,8 @@
 use crate::error::{Error, Result};
 use std::future::Future;
 
+// TODO: unchecked read and write on buffers and symbols.
+
 trait Distributable {
     // Should:
     // - impl mpi::datatype::Equivalence

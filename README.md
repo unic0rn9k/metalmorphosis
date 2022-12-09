@@ -12,7 +12,7 @@
 `graph.spawn(F(Self::edge(graph)));`.
 
 ### TODO
-- [ ] type checking
+- [X] type checking
 - [ ] awaiting nodes (buffer stuff, etc)
 - [ ] runnable (executor)
 - [ ] Benchmark two-stage blur
@@ -23,3 +23,5 @@
 
 ### Extra
 - Allocator reusablility for dynamic graphs
+- const graphs
+- time-complexity hints
