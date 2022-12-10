@@ -12,9 +12,11 @@
 //! `graph.spawn(F(Self::edge(graph)));`.
 //!
 //! ## TODO
-//! - [X] type checking
-//! - [ ] awaiting nodes (buffer stuff, etc)
-//! - [ ] runnable (executor)
+//! - [X] Type checking
+//! - [X] Buffers
+//! - [ ] impl Future for Symbol
+//! - [ ] Executor / schedular
+//!     - Wakers?
 //! - [ ] Benchmark two-stage blur
 //! - [ ] Distribute (OpenMPI?)
 //!     - don't time awaits inside node
@@ -38,6 +40,11 @@
 //
 // If you poll a symbol for a node, that is done, and has no pending readers left,
 // re-initialise its task.
+//
+// It should be possible to send/recv 3 kinds of messages over mpi
+// - a request for node's output
+// - a node's output value
+// - a node, to be polled by recipient
 
 #![cfg(test)]
 #![feature(test)]
@@ -51,13 +58,13 @@ use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::marker::{PhantomData, PhantomPinned};
 use std::mem::transmute;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 
 // Should be a ref to the buffer, instead of usize.
 // Should impl Future with #[always_use]
 // the bool is if it has already been locked. So its not locked in a loop. (attached)
 #[derive(Clone, Copy)]
-struct Symbol<T, const LOCK: bool = false>(usize, PhantomData<T>);
+struct Symbol<T: ?Sized, const LOCK: bool = false>(usize, PhantomData<T>);
 
 struct Node {
     task: fn(&mut Node) -> Box<dyn Future<Output = ()>>,
@@ -68,6 +75,8 @@ struct Node {
     this_node: usize,
     output: Buffer,
     done: bool,
+    mpi_rank: usize,
+    is_being_polled: AtomicBool,
     // sub_graphs: Vec<Graph> // which could be pushed to at runtime.
     //                        // The graphs would need some way to identify themselfes,
     //                        // so they arent rebuilt for no reason.
@@ -83,6 +92,8 @@ impl Node {
             rc: AtomicUsize::from(0),
             output: Buffer::new(),
             done: false,
+            mpi_rank: 0,
+            is_being_polled: AtomicBool::new(false),
         }
     }
 
@@ -92,6 +103,7 @@ impl Node {
 }
 
 struct Buffer {
+    // TODO: This should for sure be a *mut ()
     data: *const (),
     de: fn(&'static [u8], &mut ()) -> Result<()>,
     se: fn(&()) -> Result<Vec<u8>>,
@@ -103,6 +115,17 @@ impl Buffer {
             data: &() as *const _,
             de: |_, _| Ok(()),
             se: |_| Ok(vec![]),
+        }
+    }
+
+    fn from<'a, T: Serialize + Deserialize<'a>>(data: &T) -> Self {
+        Buffer {
+            data: data as *const _ as *const (),
+            de: |b, out| {
+                *unsafe { transmute::<_, &mut T>(out) } = bincode::deserialize(b)?;
+                Ok(())
+            },
+            se: |v| Ok(bincode::serialize::<T>(unsafe { transmute(v) })?),
         }
     }
 }
@@ -148,15 +171,8 @@ impl Graph {
     }
 
     fn new_buffer<'a, T: Serialize + Deserialize<'a>>(&mut self, val: T) -> Buffer {
-        let data = self.bump.alloc(val) as *mut _ as *const ();
-        Buffer {
-            data,
-            de: |b, out| {
-                *unsafe { transmute::<_, &mut T>(out) } = bincode::deserialize(b)?;
-                Ok(())
-            },
-            se: |v| Ok(bincode::serialize::<T>(unsafe { transmute(v) })?),
-        }
+        let data = self.bump.alloc(val);
+        Buffer::from(data)
     }
 }
 
@@ -167,7 +183,7 @@ impl Graph {
 
 trait Task {
     type InitOutput;
-    type Output;
+    type Output: ?Sized;
     fn init(self, graph: &mut Graph) -> Self::InitOutput;
     fn edge(graph: &mut Graph) -> Symbol<Self::Output> {
         Symbol(graph.calling, PhantomData)
@@ -217,31 +233,57 @@ mod test {
 
     /*
     struct Blurr3<'a> {
-        data: Symbol<&'a [u8]>,
+        data: Symbol<[u8]>,
         width: usize,
         height: usize,
     }
     impl<'a> Task for Blurr3<'a> {
-        type InitOutput = Symbol<Vec<u8>>;
-        type Output = Vec<u8>;
+        type InitOutput = Symbol<[u8]>;
+        type Output = [u8];
 
         fn init(self, graph: &mut Graph) -> Self::InitOutput {
             let (height, width) = (self.height, self.width);
             assert_eq!(width % 3, 0);
             assert_eq!(height % 3, 0);
 
-            let mut wait_group = WaitGroup::new();
-            let ret = graph.new_buffer(vec![0; height*width]);
-            let buffer2 = graph.new_buffer(vec![0; height*width]);
+            let mut stage2 = vec![];
+            let ret = graph.get_buffer(); // should return ref to data in buffer, not the actual buffer.
+            let buffer = graph.alloc(vec![0; height*width]);
+
             for row in 0..(height / 3) {
-                let stage1 = graph.spawn(RowTransBlur3(self.data, self.width), buffer1[row*3..(row+1)*3]);
-                wait_group.push(graph.spawn(RowTransBlur3(stage1, self.width), buffer2[row*3..(row+1)*3]));
+                let a = Buffer::from(&buffer[...]);
+                let b = Buffer::from(&ret[...]);
+
+                let stage1 = graph.spawn(RowBlur3(self.data, self.width), a);
+                stage2.push(graph.spawn(ColBlur3(stage1, self.height), b);
+                // `stage1` and `self.data` do not have the same type.
+                // `let stage0: Symbol<[u8]> = Symbol.map(|val: &[u8]| &val[...] );`
+                // Symbol::map<T, U> convert a Symbol<T> to a Symbol<U>
+                // if you just change the type, and not the data, it should be zero-cost
             }
 
+            // executor should se that this node has multiple sources, and should then try to distribute the work.
+            // it shouldn't assign nodes to threads, if the nodes have pending sources that are already being processed.
+            //
+            // if a node checks its reader while being polled, and the reader is being polled on another device,
+            // it should be the thread of the reading node that terminates.
+            //
+            // Don't start randomly distributing tasks, start with the ones that dont have any sources!
+
             graph.task(|_| async {
-                for _ in 0..3 {
-                    wait_group.await
-                }
+                todo!()
+                // 2 row blurs, then you can do 1 col blur, if the input is paddet.
+                // then 1 row blur per col blur.
+                //
+                // RowBlurr[x,y] should write to stage1[x,y]
+                // RowBlurr[x,y] should read from stage0[x,y]
+                // RowBlurr[x,y] should read from stage0[x+1,y]
+                // RowBlurr[x,y] should read from stage0[x-1,y]
+                //
+                // RowBlurr[x,y] should write to stage2[x,y]
+                // ColBlurr[x,y] should read from stage1[x,y]
+                // ColBlurr[x,y] should read from stage1[x,y+1]
+                // ColBlurr[x,y] should read from stage1[x,y-1]
             });
             Self::edge(graph)
         }

@@ -12,9 +12,11 @@
 `graph.spawn(F(Self::edge(graph)));`.
 
 ### TODO
-- [X] type checking
-- [ ] awaiting nodes (buffer stuff, etc)
-- [ ] runnable (executor)
+- [X] Type checking
+- [X] Buffers
+- [ ] impl Future for Symbol
+- [ ] Executor / schedular
+    - Wakers?
 - [ ] Benchmark two-stage blur
 - [ ] Distribute (OpenMPI?)
     - don't time awaits inside node
