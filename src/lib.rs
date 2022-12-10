@@ -150,6 +150,7 @@ impl Node {
     }
 
     fn respawn(&mut self) {
+        self.rc = AtomicIsize::new(self.readers.len() as isize);
         self.future = (self.task)();
     }
 }
@@ -226,24 +227,38 @@ impl<'a, T: Task> GraphHandle<'a, T> {
         self.graph.nodes[self.calling].output.data as *mut _
     }
 
+    #[must_use]
+    fn use_output(&mut self, o: &mut T::Output)
+    where
+        <T as Task>::Output: Deserialize<'static> + Serialize,
+    {
+        self.graph.nodes[self.calling].output = Buffer::from(o);
+    }
+
     fn task_(&mut self, task: Box<dyn Fn() -> Pin<Box<dyn Future<Output = ()>>>>) {
         self.graph.nodes[self.calling].task = task;
         self.graph.nodes[self.calling].respawn();
     }
 
-    /*
-    fn task(&mut self, task: impl Fn() -> Pin<Box<dyn Future<Output = T::Output>>> + 'static)
-    where
-        <T as Task>::Output: Sized + 'static,
-    {
-        let output = self.output();
-        self.graph.nodes[self.calling].task =
-            Box::new(move || Box::pin(async { unsafe { *output = task().await } }));
-        self.graph.nodes[self.calling].respawn();
-    }*/
-
     fn this_node(&mut self) -> Symbol<T::Output> {
         Symbol(&mut self.graph.nodes[self.calling] as *mut _, PhantomData)
+    }
+
+    fn new_buffer<'b, U: Serialize + Deserialize<'b>>(&mut self, val: U) -> Buffer {
+        let data = self.alloc(val);
+        Buffer::from(data)
+    }
+
+    fn alloc<U>(&mut self, val: U) -> &mut U {
+        unsafe { (*(self as *mut Self)).graph.bump.alloc(val) }
+    }
+
+    fn default_buffer(&mut self)
+    where
+        <T as Task>::Output: Deserialize<'static> + Serialize + Default,
+    {
+        let _self = unsafe { &mut *(self as *mut Self) };
+        self.use_output(_self.alloc(T::Output::default()))
     }
 }
 
@@ -262,15 +277,6 @@ impl Graph {
             nodes: vec![],
             marker: PhantomPinned,
         }
-    }
-
-    fn new_buffer<'a, T: Serialize + Deserialize<'a>>(&mut self, val: T) -> Buffer {
-        let data = self.alloc(val);
-        Buffer::from(data)
-    }
-
-    fn alloc<T>(&mut self, val: T) -> &mut T {
-        self.bump.alloc(val)
     }
 
     fn realize(&mut self) {
@@ -307,9 +313,14 @@ impl Task for () {
     fn init(self, graph: &mut GraphHandle<Self>) -> Self::InitOutput {}
 }
 
+fn default<T: Default>() -> T {
+    T::default()
+}
+
 #[macro_export]
 macro_rules! task {
     ($graph: ident, $f: expr) => {
+        $graph.default_buffer();
         let out = $graph.output();
         $graph.task_(Box::new(move || {
             Box::pin(async move {
@@ -360,7 +371,11 @@ mod test {
             let x = graph.spawn(X);
             let f = graph.spawn(F(x));
             let f = graph.own_symbol(f);
-            task!(graph, println!("f(2) = {}", unsafe { *f.await }));
+            let x = graph.own_symbol(x);
+            task!(
+                graph,
+                println!("f({}) = {}", unsafe { *x.await }, unsafe { *f.await })
+            );
         }
     }
 
