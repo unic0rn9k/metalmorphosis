@@ -14,13 +14,14 @@
 //! ## TODO
 //! - [X] Type checking
 //! - [X] Buffers
-//! - [ ] impl Future for Symbol
+//! - [X] impl Future for Symbol
+//!     - Props shouldn't return a raw-ptr tho 😬
 //!
 //! - [ ] return Result everywhere
 //! - [X] handle for graph with type information about the node calling it.
 //!
 //! - [ ] Executor / schedular
-//!     - Wakers?
+//!     - Wakers? (wake me up inside)
 //! - [ ] Benchmark two-stage blur
 //! - [ ] Distribute (OpenMPI?)
 //!     - don't time awaits inside node
