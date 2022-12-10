@@ -65,6 +65,7 @@ use std::future::Future;
 use std::marker::{PhantomData, PhantomPinned};
 use std::mem::transmute;
 use std::pin::Pin;
+use std::ptr::{null, null_mut};
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::atomic::{AtomicBool, AtomicIsize};
 use std::sync::Arc;
@@ -150,6 +151,9 @@ impl Node {
     }
 
     fn respawn(&mut self) {
+        if self.output.data == null_mut() {
+            panic!("Looks like you forgot to initialize a buffer")
+        }
         self.rc = AtomicIsize::new(self.readers.len() as isize);
         self.future = (self.task)();
     }
@@ -165,7 +169,7 @@ struct Buffer {
 impl Buffer {
     fn new() -> Self {
         Self {
-            data: &mut () as *mut _,
+            data: std::ptr::null_mut(),
             de: |_, _| Ok(()),
             se: |_| Ok(vec![]),
         }
@@ -221,10 +225,15 @@ impl<'a, T: Task> GraphHandle<'a, T> {
 
     fn output(&mut self) -> *mut T::Output
     where
-        T::Output: Sized,
+        <T as Task>::Output: Deserialize<'static> + Serialize,
         // If this size bound is removed, the compiler complains about casting thin pointer to a fat one...
     {
-        self.graph.nodes[self.calling].output.data as *mut _
+        let mut ptr = self.graph.nodes[self.calling].output.data as *mut T::Output;
+        if ptr == null_mut() {
+            self.uninit_buffer();
+            ptr = self.graph.nodes[self.calling].output.data as *mut T::Output;
+        }
+        ptr
     }
 
     #[must_use]
@@ -253,12 +262,14 @@ impl<'a, T: Task> GraphHandle<'a, T> {
         unsafe { (*(self as *mut Self)).graph.bump.alloc(val) }
     }
 
-    fn default_buffer(&mut self)
+    fn uninit_buffer(&mut self)
     where
-        <T as Task>::Output: Deserialize<'static> + Serialize + Default,
+        <T as Task>::Output: Deserialize<'static> + Serialize,
     {
-        let _self = unsafe { &mut *(self as *mut Self) };
-        self.use_output(_self.alloc(T::Output::default()))
+        unsafe {
+            let _self = &mut *(self as *mut Self);
+            self.use_output(_self.alloc(std::mem::MaybeUninit::<T::Output>::uninit().assume_init()))
+        }
     }
 }
 
@@ -316,7 +327,6 @@ impl Task for () {
 #[macro_export]
 macro_rules! task {
     ($graph: ident, $f: expr) => {
-        $graph.default_buffer();
         let out = $graph.output();
         $graph.task_(Box::new(move || {
             Box::pin(async move {
@@ -437,9 +447,6 @@ mod test {
         }
     }
     */
-
-    #[test]
-    fn basic() {}
 
     #[bench]
     fn spawn_async(b: &mut Bencher) {
