@@ -66,7 +66,7 @@ use std::marker::{PhantomData, PhantomPinned};
 use std::mem::transmute;
 use std::pin::Pin;
 use std::sync::atomic::Ordering::SeqCst;
-use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize};
+use std::sync::atomic::{AtomicBool, AtomicIsize};
 use std::sync::Arc;
 use std::task::{Context, Poll, Wake};
 
@@ -76,8 +76,8 @@ use std::task::{Context, Poll, Wake};
 #[derive(Clone, Copy)]
 struct Symbol<T: ?Sized, const LOCK: bool = false>(*mut Node, PhantomData<T>);
 
-impl<T> Future for Symbol<T, true> {
-    type Output = *const T;
+impl<T: 'static> Future for Symbol<T, true> {
+    type Output = &'static T;
 
     // It doesn't seem that this must use does anythin :/
     #[must_use]
@@ -189,7 +189,7 @@ struct Graph {
     // and return a locked symbol from it. (also would require reusing the mpi universe)
     bump: bumpalo::Bump,
     nodes: Vec<Node>,
-    marker: PhantomPinned,
+    _marker: PhantomPinned,
 }
 
 struct GraphHandle<'a, T: Task + ?Sized> {
@@ -275,7 +275,7 @@ impl Graph {
         Graph {
             bump: bumpalo::Bump::new(),
             nodes: vec![],
-            marker: PhantomPinned,
+            _marker: PhantomPinned,
         }
     }
 
@@ -310,11 +310,7 @@ trait Task {
 impl Task for () {
     type InitOutput = ();
     type Output = ();
-    fn init(self, graph: &mut GraphHandle<Self>) -> Self::InitOutput {}
-}
-
-fn default<T: Default>() -> T {
-    T::default()
+    fn init(self, _: &mut GraphHandle<Self>) -> Self::InitOutput {}
 }
 
 #[macro_export]
@@ -358,7 +354,7 @@ mod test {
             //graph.task_(Box::new(move || {
             //    Box::pin(async move { unsafe { *output = *x.clone().await * 3. + 4. } })
             //}));
-            task!(graph, unsafe { *x.await } * 3. + 4.);
+            task!(graph, x.await * 3. + 4.);
             graph.this_node()
         }
     }
@@ -372,10 +368,7 @@ mod test {
             let f = graph.spawn(F(x));
             let f = graph.own_symbol(f);
             let x = graph.own_symbol(x);
-            task!(
-                graph,
-                println!("f({}) = {}", unsafe { *x.await }, unsafe { *f.await })
-            );
+            task!(graph, println!("f({}) = {}", x.await, f.await));
         }
     }
 
