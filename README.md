@@ -15,6 +15,10 @@
 - [X] Type checking
 - [X] Buffers
 - [ ] impl Future for Symbol
+
+- [ ] return Result everywhere
+- [X] handle for graph with type information about the node calling it.
+
 - [ ] Executor / schedular
     - Wakers?
 - [ ] Benchmark two-stage blur
@@ -27,3 +31,4 @@
 - Allocator reusablility for dynamic graphs
 - const graphs
 - time-complexity hints
+- static types for futures
