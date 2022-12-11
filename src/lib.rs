@@ -223,7 +223,6 @@ impl<'a, T: Task> GraphHandle<'a, T> {
     fn own_symbol<U>(&mut self, s: Symbol<U>) -> OwnedSymbol<U> {
         unsafe {
             (*s.0).readers.push(self.calling);
-            (*s.0).rc = AtomicIsize::new((*s.0).readers.len() as isize);
         }
         // dont fetch add here. Instead set `node.rc` to `node.readers.len()` when calling `node.task`
         // s.0.rc.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -252,7 +251,6 @@ impl<'a, T: Task> GraphHandle<'a, T> {
 
     fn task(&mut self, task: Box<dyn Fn() -> Pin<Box<dyn Future<Output = ()>>>>) {
         self.graph.nodes[self.calling].task = task;
-        self.graph.nodes[self.calling].respawn();
     }
 
     fn this_node(&mut self) -> Symbol<T::Output> {
@@ -292,6 +290,10 @@ impl Graph {
     }
 
     fn realize(&mut self) {
+        for n in &mut self.nodes {
+            n.respawn()
+        }
+
         let waker = Arc::new(NilWaker).into();
         let mut cx = Context::from_waker(&waker);
         let mut node = 0;
