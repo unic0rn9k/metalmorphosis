@@ -1,5 +1,5 @@
 //! <div align="center">
-//! <h1> metalmorphosis </h1>
+//! <img src="https://raw.githubusercontent.com/unic0rn9k/metalmorphosis/4th_refactor/logo.png" width="300"/>
 //! </div>
 //!
 //! ## Definitions
