@@ -21,7 +21,11 @@
 //!
 //! - [ ] Executor / schedular
 //!     - Wakers? (wake me up inside)
+//! - [ ] multithreaded
+//!     - thread pool
+//!     - join future that works with array of symbols
 //! - [ ] Benchmark two-stage blur
+//!
 //! - [ ] Distribute (OpenMPI?)
 //!     - don't time awaits inside node
 //!     - reusing output in node would confuse executor
@@ -51,8 +55,19 @@
 // - a node's output value
 // - a node, to be polled by recipient
 
+// Each device keeps track of last device to not do anything.
+// (0 is no device)
+// There is a global AtomicUsize with the last device to not do anything.
+// When a device becomes available, it sets its counter to its own id,
+// and swaps its internal counter with the global.
+//
+// when a device recieves new work, it swaps the counters back again.
+//
+// if the device is on another machine, use latency table to decide if it should actually distribute.
+
 #![cfg(test)]
 #![feature(test)]
+#![feature(future_join)]
 
 //mod buffer;
 mod error;
@@ -60,6 +75,7 @@ mod error;
 use error::{Error, Result};
 use serde::{Deserialize, Serialize};
 
+use std::any::type_name;
 use std::future::Future;
 use std::marker::{PhantomData, PhantomPinned};
 use std::mem::transmute;
@@ -116,7 +132,8 @@ impl<T: 'static> Future for OwnedSymbol<T> {
                 //    }
                 //    (*self.0).is_being_polled.swap(false, SeqCst);
                 //}
-                (*self.1).awaiting = (*self.0).this_node
+                (*self.1).qued = (*self.0).this_node;
+                (*self.0).qued = (*self.1).this_node;
             }
             Poll::Pending
         }
@@ -127,11 +144,16 @@ impl<T: 'static> Future for OwnedSymbol<T> {
 // if it is allocated on the graphs bump allocator,
 // and Node provides a funtion pointer for polling and initializing it.
 struct Node {
+    name: &'static str,
     task: Box<dyn Fn() -> Pin<Box<dyn Future<Output = ()>>>>,
     future: Pin<Box<dyn Future<Output = ()>>>,
-    readers: Vec<usize>,
+    // VVV BASH ME GENIUS VVV
+    // we just need to know how many readers it has,
+    // and which node last awaited it (AtomicUsize).
+    readers: usize,
     rc: AtomicIsize,
-    awaiting: usize,
+    qued: usize, // TODO: Make these atomic
+    fork: isize,
     this_node: usize,
     output: Buffer,
     done: bool,
@@ -145,11 +167,13 @@ struct Node {
 impl Node {
     fn new(this_node: usize) -> Self {
         Node {
+            name: "NIL",
             task: Box::new(|| Box::pin(async {})),
             future: Box::pin(async {}),
-            readers: vec![],
+            readers: 0,
             rc: AtomicIsize::from(0),
-            awaiting: 0,
+            qued: 0,
+            fork: -1,
             this_node,
             output: Buffer::new(),
             done: false,
@@ -162,7 +186,7 @@ impl Node {
         if self.output.data == null_mut() {
             panic!("Looks like you forgot to initialize a buffer")
         }
-        self.rc = AtomicIsize::new(self.readers.len() as isize);
+        self.rc = AtomicIsize::new(self.readers as isize);
         self.future = (self.task)();
     }
 }
@@ -214,6 +238,7 @@ impl<'a, T: Task> GraphHandle<'a, T> {
         let id = self.calling;
         self.calling = self.graph.nodes.len();
         self.graph.nodes.push(Node::new(self.calling));
+        self.graph.nodes[self.calling].name = U::name();
         let ret = task.init(unsafe { transmute::<&mut Self, _>(self) });
         self.calling = id;
         ret
@@ -222,7 +247,8 @@ impl<'a, T: Task> GraphHandle<'a, T> {
     // attaches edge to self.
     fn own_symbol<U>(&mut self, s: Symbol<U>) -> OwnedSymbol<U> {
         unsafe {
-            (*s.0).readers.push(self.calling);
+            // (*s.0).readers.push(self.calling);
+            (*s.0).readers += 1;
         }
         // dont fetch add here. Instead set `node.rc` to `node.readers.len()` when calling `node.task`
         // s.0.rc.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -290,6 +316,7 @@ impl Graph {
     }
 
     fn realize(&mut self) {
+        // TODO: Executor needs to check for forks, and push them to thread pool.
         for n in &mut self.nodes {
             n.respawn()
         }
@@ -302,19 +329,34 @@ impl Graph {
             if self.nodes[node].done {
                 panic!("Cycle!")
             }
-            self.nodes[node].awaiting = 0;
+            //self.nodes[node].qued = 0;
             match Pin::new(&mut self.nodes[node].future).poll(&mut cx) {
                 Poll::Ready(()) => {
                     if node == 0 {
                         break;
                     }
                     self.nodes[node].done = true;
-                    // TODO: Don't just read from the 0th reader
-                    node = self.nodes[node].readers[0];
+
+                    // this solution is problemtic in cases where `n` pending because its awaiting another node
+                    //for n in &self.nodes[node].readers {
+                    //    if !self.nodes[*n].done {
+                    //        node = *n;
+                    //    }
+                    //}
+                    let n = self.nodes[node].qued;
+                    #[cfg(test)]
+                    println!("{}::{n} <- {}::{node}", self.name_of(n), self.name_of(node));
+                    node = n;
                 }
                 Poll::Pending => {
-                    let awaiting = self.nodes[node].awaiting;
+                    let awaiting = self.nodes[node].qued;
                     if awaiting != 0 {
+                        #[cfg(test)]
+                        println!(
+                            "{}::{node} -> {}::{awaiting}",
+                            self.name_of(node),
+                            self.name_of(awaiting)
+                        );
                         node = awaiting
                     } else {
                         panic!("Pending nothing?");
@@ -322,6 +364,10 @@ impl Graph {
                 }
             }
         }
+    }
+
+    fn name_of(&self, n: usize) -> &'static str {
+        self.nodes[n].name
     }
 
     fn print(&self) {
@@ -347,6 +393,9 @@ trait Task {
     type InitOutput;
     type Output: ?Sized;
     fn init(self, graph: &mut GraphHandle<Self>) -> Self::InitOutput;
+    fn name() -> &'static str {
+        type_name::<Self>()
+    }
 }
 
 impl Task for () {
@@ -371,6 +420,8 @@ macro_rules! task {
 #[cfg(test)]
 mod test {
     extern crate test;
+    use std::future::join;
+
     use test::black_box;
     use test::Bencher;
 
@@ -405,9 +456,24 @@ mod test {
             let f = graph.spawn(F(x));
             let f = graph.own_symbol(f);
             let x = graph.own_symbol(x);
-            task!(graph, println!("f({}) = {}", x.await, f.await));
+            task!(graph, {
+                let (x, y) = join!(x, f).await;
+                println!("f({x}) = {y}")
+            });
         }
     }
+
+    // if you just have a node for spawning a sub-graph, that takes inputs from inside async block and returns a graph,
+    // you can call it on a new device that needs to spawn a task from that sub-graph.
+    // combined with reusing stuff from parent graph.
+
+    /*
+    #[morphic]
+    fn F(graph, x: Symbol<f32>) -> f32{
+        let x = graph.own_symbol(x);
+        task!(graph, x.await * 3. + 3);
+    }
+    */
 
     #[test]
     fn f_of_x() {
@@ -417,12 +483,12 @@ mod test {
         graph.realize();
     }
 
-    struct Blurr3 {
+    struct Blurrr {
         data: Symbol<[u8]>,
         width: usize,
         height: usize,
     }
-    impl Task for Blurr3 {
+    impl Task for Blurrr {
         type InitOutput = Symbol<Vec<u8>>;
         type Output = Vec<u8>;
 

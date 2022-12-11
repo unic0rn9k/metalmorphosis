@@ -21,7 +21,11 @@
 
 - [ ] Executor / schedular
     - Wakers? (wake me up inside)
+- [ ] multithreaded
+    - thread pool
+    - join future that works with array of symbols
 - [ ] Benchmark two-stage blur
+
 - [ ] Distribute (OpenMPI?)
     - don't time awaits inside node
     - reusing output in node would confuse executor
