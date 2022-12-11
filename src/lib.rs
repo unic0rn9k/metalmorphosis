@@ -417,31 +417,31 @@ mod test {
         graph.realize();
     }
 
-    /*
-    struct Blurr3<'a> {
+    struct Blurr3 {
         data: Symbol<[u8]>,
         width: usize,
         height: usize,
     }
-    impl<'a> Task for Blurr3<'a> {
-        type InitOutput = Symbol<[u8]>;
-        type Output = [u8];
+    impl Task for Blurr3 {
+        type InitOutput = Symbol<Vec<u8>>;
+        type Output = Vec<u8>;
 
-        fn init(self, graph: &mut Graph) -> Self::InitOutput {
+        fn init(self, graph: &mut GraphHandle<Self>) -> Self::InitOutput {
             let (height, width) = (self.height, self.width);
             assert_eq!(width % 3, 0);
             assert_eq!(height % 3, 0);
 
-            let mut stage2 = vec![];
-            let ret = graph.get_buffer(); // should return ref to data in buffer, not the actual buffer.
-            let buffer = graph.alloc(vec![0; height*width]);
+            let mut stage2 = vec![0u8; width * height];
+            let ret = graph.output(); // should return ref to data in buffer, not the actual buffer.
+            let buffer = graph.alloc(vec![0; height * width]);
 
             for row in 0..(height / 3) {
-                let a = Buffer::from(&mut buffer[...]);
-                let b = Buffer::from(&mut ret[...]);
+                //let a = Buffer::from(&mut buffer[...]);
+                //let b = Buffer::from(&mut ret[...]);
 
-                let stage1 = graph.spawn(RowBlur3(self.data, self.width), a);
-                stage2.push(graph.spawn(ColBlur3(stage1, self.height), b);
+                //let stage1 = graph.spawn(RowBlur3(self.data, self.width), a);
+                //stage2.push(graph.spawn(ColBlur3(stage1, self.height), b);
+
                 // `stage1` and `self.data` do not have the same type.
                 // `let stage0: Symbol<[u8]> = Symbol.map(|val: &[u8]| &val[...] );`
                 // Symbol::map<T, U> convert a Symbol<T> to a Symbol<U>
@@ -456,7 +456,7 @@ mod test {
             //
             // Don't start randomly distributing tasks, start with the ones that dont have any sources!
 
-            graph.task(|_| async {
+            task! {graph,
                 todo!()
                 // 2 row blurs, then you can do 1 col blur, if the input is paddet.
                 // then 1 row blur per col blur.
@@ -470,11 +470,10 @@ mod test {
                 // ColBlurr[x,y] should read from stage1[x,y]
                 // ColBlurr[x,y] should read from stage1[x,y+1]
                 // ColBlurr[x,y] should read from stage1[x,y-1]
-            });
-            Self::edge(graph)
+            };
+            graph.this_node()
         }
     }
-    */
 
     #[bench]
     fn spawn_async(b: &mut Bencher) {
