@@ -463,7 +463,8 @@ mod test {
         }
     }
 
-    // if you just have a node for spawning a sub-graph, that takes inputs from inside async block and returns a graph,
+    // if you just have a node for spawning a sub-graph,
+    // that takes inputs from inside async block (ie not symbols) and returns a graph (Output=Graph),
     // you can call it on a new device that needs to spawn a task from that sub-graph.
     // combined with reusing stuff from parent graph.
 
