@@ -15,7 +15,6 @@
 - [X] Type checking
 - [X] Buffers
 - [X] impl Future for Symbol
-    - Props shouldn't return a raw-ptr tho 😬
 
 - [ ] return Result everywhere
 - [X] handle for graph with type information about the node calling it.

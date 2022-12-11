@@ -15,7 +15,6 @@
 //! - [X] Type checking
 //! - [X] Buffers
 //! - [X] impl Future for Symbol
-//!     - Props shouldn't return a raw-ptr tho 😬
 //!
 //! - [ ] return Result everywhere
 //! - [X] handle for graph with type information about the node calling it.
@@ -65,7 +64,7 @@ use std::future::Future;
 use std::marker::{PhantomData, PhantomPinned};
 use std::mem::transmute;
 use std::pin::Pin;
-use std::ptr::{null, null_mut};
+use std::ptr::null_mut;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::atomic::{AtomicBool, AtomicIsize};
 use std::sync::Arc;
@@ -75,12 +74,14 @@ use std::task::{Context, Poll, Wake};
 // Should impl Future with #[always_use]
 // the bool is if it has already been locked. So its not locked in a loop. (attached)
 #[derive(Clone, Copy)]
-struct Symbol<T: ?Sized, const LOCK: bool = false>(*mut Node, PhantomData<T>);
+struct Symbol<T: ?Sized>(*mut Node, PhantomData<T>);
+#[derive(Clone, Copy)]
+struct OwnedSymbol<T: ?Sized>(*mut Node, *mut Node, PhantomData<T>);
 
-impl<T: 'static> Future for Symbol<T, true> {
+impl<T: 'static> Future for OwnedSymbol<T> {
     type Output = &'static T;
 
-    // It doesn't seem that this must use does anythin :/
+    // It doesn't seem that this must_use does anythin :/
     #[must_use]
     fn poll(
         self: std::pin::Pin<&mut Self>,
@@ -100,16 +101,22 @@ impl<T: 'static> Future for Symbol<T, true> {
                     // someone else is starting to poll it. Hopefully...
                     // it should be very unlikely to end up here,
                     // as rc should be set as soon as a node is re-inited.
-                    panic!("This might be nothing... It's props a bug tho :/");
+                    panic!(
+                        "rc < -1; when {} awaiting {}",
+                        (*self.1).this_node,
+                        (*self.0).this_node
+                    );
                 }
             } else {
-                let poll_here = !(*self.0).is_being_polled.swap(true, SeqCst);
-                if poll_here {
-                    if Pin::new(&mut (*self.0).future).poll(cx).is_ready() {
-                        (*self.0).done = true;
-                        return Poll::Ready(transmute((*self.0).output.data));
-                    }
-                }
+                //let poll_here = !(*self.0).is_being_polled.swap(true, SeqCst);
+                //if poll_here {
+                //    if Pin::new(&mut (*self.0).future).poll(cx).is_ready() {
+                //        (*self.0).done = true;
+                //        return Poll::Ready(transmute((*self.0).output.data));
+                //    }
+                //    (*self.0).is_being_polled.swap(false, SeqCst);
+                //}
+                (*self.1).awaiting = (*self.0).this_node
             }
             Poll::Pending
         }
@@ -121,10 +128,10 @@ impl<T: 'static> Future for Symbol<T, true> {
 // and Node provides a funtion pointer for polling and initializing it.
 struct Node {
     task: Box<dyn Fn() -> Pin<Box<dyn Future<Output = ()>>>>,
-    // cant keep future here if it should be possible to iterate in parallel.
     future: Pin<Box<dyn Future<Output = ()>>>,
     readers: Vec<usize>,
-    rc: AtomicIsize, // Should be in buffer.
+    rc: AtomicIsize,
+    awaiting: usize,
     this_node: usize,
     output: Buffer,
     done: bool,
@@ -142,6 +149,7 @@ impl Node {
             future: Box::pin(async {}),
             readers: vec![],
             rc: AtomicIsize::from(0),
+            awaiting: 0,
             this_node,
             output: Buffer::new(),
             done: false,
@@ -160,7 +168,6 @@ impl Node {
 }
 
 struct Buffer {
-    // TODO: This should for sure be a *mut ()
     data: *mut (),
     de: fn(&'static [u8], &mut ()) -> Result<()>,
     se: fn(&()) -> Result<Vec<u8>>,
@@ -203,7 +210,6 @@ struct GraphHandle<'a, T: Task + ?Sized> {
 }
 
 impl<'a, T: Task> GraphHandle<'a, T> {
-    // should take a buffer as arg, which will used when creating the new tasks symbol.
     fn spawn<U: Task>(&mut self, task: U) -> U::InitOutput {
         let id = self.calling;
         self.calling = self.graph.nodes.len();
@@ -214,13 +220,14 @@ impl<'a, T: Task> GraphHandle<'a, T> {
     }
 
     // attaches edge to self.
-    fn own_symbol<U>(&mut self, s: Symbol<U>) -> Symbol<U, true> {
+    fn own_symbol<U>(&mut self, s: Symbol<U>) -> OwnedSymbol<U> {
         unsafe {
             (*s.0).readers.push(self.calling);
+            (*s.0).rc = AtomicIsize::new((*s.0).readers.len() as isize);
         }
         // dont fetch add here. Instead set `node.rc` to `node.readers.len()` when calling `node.task`
         // s.0.rc.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Symbol(s.0, s.1)
+        OwnedSymbol(s.0, &mut self.graph.nodes[self.calling] as *mut _, s.1)
     }
 
     fn output(&mut self) -> *mut T::Output
@@ -236,7 +243,6 @@ impl<'a, T: Task> GraphHandle<'a, T> {
         ptr
     }
 
-    #[must_use]
     fn use_output(&mut self, o: &mut T::Output)
     where
         <T as Task>::Output: Deserialize<'static> + Serialize,
@@ -244,7 +250,7 @@ impl<'a, T: Task> GraphHandle<'a, T> {
         self.graph.nodes[self.calling].output = Buffer::from(o);
     }
 
-    fn task_(&mut self, task: Box<dyn Fn() -> Pin<Box<dyn Future<Output = ()>>>>) {
+    fn task(&mut self, task: Box<dyn Fn() -> Pin<Box<dyn Future<Output = ()>>>>) {
         self.graph.nodes[self.calling].task = task;
         self.graph.nodes[self.calling].respawn();
     }
@@ -253,13 +259,8 @@ impl<'a, T: Task> GraphHandle<'a, T> {
         Symbol(&mut self.graph.nodes[self.calling] as *mut _, PhantomData)
     }
 
-    fn new_buffer<'b, U: Serialize + Deserialize<'b>>(&mut self, val: U) -> Buffer {
-        let data = self.alloc(val);
-        Buffer::from(data)
-    }
-
     fn alloc<U>(&mut self, val: U) -> &mut U {
-        unsafe { (*(self as *mut Self)).graph.bump.alloc(val) }
+        self.graph.bump.alloc(val)
     }
 
     fn uninit_buffer(&mut self)
@@ -293,9 +294,37 @@ impl Graph {
     fn realize(&mut self) {
         let waker = Arc::new(NilWaker).into();
         let mut cx = Context::from_waker(&waker);
-        match Pin::new(&mut self.nodes[0].future).poll(&mut cx) {
-            Poll::Ready(_) => println!("Just like that..."),
-            Poll::Pending => println!("So sad :("),
+        let mut node = 0;
+
+        loop {
+            if self.nodes[node].done {
+                panic!("Cycle!")
+            }
+            self.nodes[node].awaiting = 0;
+            match Pin::new(&mut self.nodes[node].future).poll(&mut cx) {
+                Poll::Ready(()) => {
+                    if node == 0 {
+                        break;
+                    }
+                    self.nodes[node].done = true;
+                    // TODO: Don't just read from the 0th reader
+                    node = self.nodes[node].readers[0];
+                }
+                Poll::Pending => {
+                    let awaiting = self.nodes[node].awaiting;
+                    if awaiting != 0 {
+                        node = awaiting
+                    } else {
+                        panic!("Pending nothing?");
+                    }
+                }
+            }
+        }
+    }
+
+    fn print(&self) {
+        for n in 0..self.nodes.len() {
+            println!("{n} -> {:?}", self.nodes[n].readers);
         }
     }
 }
@@ -328,7 +357,7 @@ impl Task for () {
 macro_rules! task {
     ($graph: ident, $f: expr) => {
         let out = $graph.output();
-        $graph.task_(Box::new(move || {
+        $graph.task(Box::new(move || {
             Box::pin(async move {
                 let f = $f;
                 unsafe { *out = f }
@@ -360,10 +389,6 @@ mod test {
         type Output = f32;
         fn init(self, graph: &mut GraphHandle<Self>) -> Self::InitOutput {
             let x = graph.own_symbol(self.0);
-            //let output = graph.output();
-            //graph.task_(Box::new(move || {
-            //    Box::pin(async move { unsafe { *output = *x.clone().await * 3. + 4. } })
-            //}));
             task!(graph, x.await * 3. + 4.);
             graph.this_node()
         }
@@ -386,6 +411,7 @@ mod test {
     fn f_of_x() {
         let mut graph = Graph::new();
         graph.handle().spawn(Y);
+        //graph.print();
         graph.realize();
     }
 
