@@ -33,8 +33,10 @@
 
 ### Extra
 - Allocator reusablility for dynamic graphs
-- Const graphs
+- Const graphs (lib.rs/phf)
 - Time-complexity hints
 - Static types for futures
 - Graph serialization (need runtime typechecking for graph hot-realoading)
 - Optional stack trace (basically already implemented this)
+- Check for cycles when building graph
+- Multiple backends for providing tasks (eg: shared object files, cranelift, fancy jit / hot-reloading)
