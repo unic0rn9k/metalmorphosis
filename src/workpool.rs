@@ -171,6 +171,8 @@ impl Pool {
                     unsafe {
                         (*pool.graph).compute(task as usize, pool);
                     }
+
+                    worker.task.store(-1, Ordering::SeqCst);
                 }));
         }
     }
