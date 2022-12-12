@@ -276,10 +276,10 @@ impl<'a, T: Task> GraphHandle<'a, T> {
         <T as Task>::Output: Deserialize<'static> + Serialize,
         // If this size bound is removed, the compiler complains about casting thin pointer to a fat one...
     {
-        let mut ptr = self.graph.nodes[self.calling].output.data.unholy();
+        let mut ptr: MutPtr<T::Output> = self.graph.nodes[self.calling].output.data.transmute();
         if ptr.is_null() {
             self.uninit_buffer();
-            ptr = self.graph.nodes[self.calling].output.data.unholy();
+            ptr = self.graph.nodes[self.calling].output.data.transmute();
         }
         ptr
     }
@@ -400,10 +400,6 @@ impl Graph {
             println!("{n} -> {:?}", self.nodes[n].readers);
         }
     }
-
-    fn ptr(&mut self) -> MutPtr<Self> {
-        MutPtr::from(self)
-    }
 }
 
 struct NilWaker;
@@ -436,11 +432,11 @@ impl Task for () {
 #[macro_export]
 macro_rules! task {
     ($graph: ident, $f: expr) => {
-        let out = $graph.output();
+        let mut out = $graph.output();
         $graph.task(Box::new(move || {
             Box::pin(async move {
                 let f = $f;
-                unsafe { *out.get() = f }
+                unsafe { *out = f }
             })
         }));
     };

@@ -1,4 +1,5 @@
 use std::{
+    ops::{Deref, DerefMut},
     ptr::null_mut,
     sync::atomic::{AtomicIsize, Ordering},
     thread::{self, JoinHandle},
@@ -29,33 +30,46 @@ impl Worker {
         }
     }
 }
-unsafe impl Sync for Worker {}
 
-#[derive(Copy, Clone)]
+// Oh god. What is this?
 pub struct MutPtr<T>(*mut T);
-unsafe impl<T> Sync for MutPtr<T> {}
 unsafe impl<T> Send for MutPtr<T> {}
 impl<T> MutPtr<T> {
-    pub fn get(self) -> &'static mut T {
-        unsafe { &mut *self.0 }
-    }
     pub fn from<U>(s: &mut U) -> Self {
         Self(s as *mut U as *mut T)
-    }
-    fn clone(&self) -> Self {
-        Self(self.0)
     }
     pub fn null() -> Self {
         Self(null_mut())
     }
-    pub fn is_null(&self) -> bool {
+    pub fn is_null(self) -> bool {
         self.0.is_null()
     }
     pub fn ptr(self) -> *mut T {
         self.0
     }
-    pub fn unholy<U>(self) -> MutPtr<U> {
+    pub fn transmute<U>(self) -> MutPtr<U> {
         unsafe { MutPtr::from(&mut *self.0) }
+    }
+}
+
+impl<T> Copy for MutPtr<T> {}
+impl<T> Clone for MutPtr<T> {
+    fn clone(&self) -> Self {
+        Self(self.0)
+    }
+}
+
+impl<T> Deref for MutPtr<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*self.0 }
+    }
+}
+
+impl<T> DerefMut for MutPtr<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { &mut *self.0 }
     }
 }
 
@@ -66,8 +80,6 @@ pub struct Pool {
     thread_handles: Vec<JoinHandle<()>>,
     worker_handles: Vec<Worker>,
 }
-unsafe impl Sync for Pool {}
-
 pub type PoolHandle = MutPtr<Pool>;
 
 impl Pool {
@@ -79,47 +91,39 @@ impl Pool {
             thread_handles: vec![],
             worker_handles: vec![],
         };
-        Self::init(PoolHandle::from(&mut tmp));
+        unsafe { Self::init(PoolHandle::from(&mut tmp)) }
         tmp
     }
 
-    fn init(pool: PoolHandle) {
+    unsafe fn init(mut pool: PoolHandle) {
         let threads = std::thread::available_parallelism().unwrap().into();
         for thread_id in 0..threads {
-            let pool = pool.clone();
             let mut worker = Worker::new(DeviceID {
                 mpi_id: 0,
                 thread_id,
             });
 
-            pool.clone().get().worker_handles.push(worker);
-            let worker = pool.clone().get().worker_handles.last_mut().unwrap();
+            pool.worker_handles.push(worker);
+            let worker = (*pool.ptr()).worker_handles.last_mut().unwrap();
 
-            pool.clone()
-                .get()
-                .thread_handles
-                .push(thread::spawn(move || {
-                    loop {
-                        // TODO: Signal that this thread isn't doing anything.
-                        let last_available = pool.clone().get().last_available.swap(
-                            pool.clone().get().last_available.load(Ordering::SeqCst),
-                            Ordering::SeqCst,
-                        );
-                        pool.clone()
-                            .get()
-                            .last_available
-                            .store(last_available, Ordering::SeqCst);
-                        let mut task = worker.task.load(Ordering::Acquire);
-                        while task < 0 {
-                            thread::park();
-                            task = worker.task.load(Ordering::Acquire);
-                        }
-
-                        unsafe {
-                            (*pool.clone().get().graph).compute(task as usize, pool.clone());
-                        }
+            pool.clone().thread_handles.push(thread::spawn(move || {
+                loop {
+                    // TODO: Signal that this thread isn't doing anything.
+                    let last_available = pool
+                        .last_available
+                        .swap(pool.last_available.load(Ordering::SeqCst), Ordering::SeqCst);
+                    pool.last_available.store(last_available, Ordering::SeqCst);
+                    let mut task = worker.task.load(Ordering::Acquire);
+                    while task < 0 {
+                        thread::park();
+                        task = worker.task.load(Ordering::Acquire);
                     }
-                }));
+
+                    unsafe {
+                        (*pool.graph).compute(task as usize, pool);
+                    }
+                }
+            }));
         }
     }
 
