@@ -86,7 +86,7 @@ use std::future::Future;
 use std::marker::{PhantomData, PhantomPinned};
 use std::mem::transmute;
 use std::pin::Pin;
-use std::sync::atomic::Ordering::SeqCst;
+use std::sync::atomic::Ordering::{self, SeqCst};
 use std::sync::atomic::{AtomicBool, AtomicIsize};
 use std::sync::Arc;
 use std::task::{Context, Poll, Wake};
@@ -344,8 +344,14 @@ impl Graph {
                 panic!("Cycle!")
             }
 
-            //self.nodes[node].qued = 0;
-            // Check and set is_being_polled
+            if self.nodes[node]
+                .is_being_polled
+                .swap(true, Ordering::SeqCst)
+            {
+                // TODO: Don't just spin, do something!
+                continue;
+            }
+
             match Pin::new(&mut self.nodes[node].future).poll(&mut cx) {
                 Poll::Ready(()) => {
                     if node == 0 {
@@ -366,6 +372,12 @@ impl Graph {
                 }
                 Poll::Pending => {
                     let awaiting = self.nodes[node].qued;
+                    if !self.nodes[node]
+                        .is_being_polled
+                        .swap(false, Ordering::SeqCst)
+                    {
+                        panic!("WTF! Recently polled node was marked as 'not being polled'");
+                    }
                     if awaiting != 0 {
                         #[cfg(test)]
                         println!(
@@ -492,8 +504,8 @@ mod test {
             let x = graph.own_symbol(x);
             task!(graph, {
                 //let (x, y) = join!(x, f).await;
-                let y = f.await;
                 let x = x.await;
+                let y = f.await;
                 println!("f({x}) = {y}")
             });
         }

@@ -106,13 +106,14 @@ impl Pool {
             pool.worker_handles.push(worker);
             let worker = (*pool.ptr()).worker_handles.last_mut().unwrap();
 
-            pool.clone().thread_handles.push(thread::spawn(move || {
-                loop {
-                    // TODO: Signal that this thread isn't doing anything.
+            pool.clone()
+                .thread_handles
+                .push(thread::spawn(move || loop {
                     let last_available = pool
                         .last_available
                         .swap(pool.last_available.load(Ordering::SeqCst), Ordering::SeqCst);
                     pool.last_available.store(last_available, Ordering::SeqCst);
+
                     let mut task = worker.task.load(Ordering::Acquire);
                     while task < 0 {
                         thread::park();
@@ -122,8 +123,7 @@ impl Pool {
                     unsafe {
                         (*pool.graph).compute(task as usize, pool);
                     }
-                }
-            }));
+                }));
         }
     }
 
@@ -142,5 +142,21 @@ impl Pool {
 
     pub fn handle(&mut self) -> PoolHandle {
         PoolHandle::from(self)
+    }
+
+    pub fn assign(&mut self, task: usize, worker: DeviceID) {
+        self.worker_handles[worker.thread_id]
+            .task
+            .store(task as isize, Ordering::SeqCst);
+        self.thread_handles[worker.thread_id].thread().unpark();
+
+        let mut bruh = self.worker_handles[worker.thread_id]
+            .task
+            .load(Ordering::SeqCst);
+        while bruh > 0 {
+            bruh = self.worker_handles[worker.thread_id]
+                .task
+                .load(Ordering::SeqCst);
+        }
     }
 }
