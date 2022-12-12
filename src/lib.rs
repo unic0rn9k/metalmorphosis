@@ -33,9 +33,12 @@
 //!
 //! ## Extra
 //! - Allocator reusablility for dynamic graphs
-//! - const graphs
-//! - time-complexity hints
-//! - static types for futures
+//! - Const graphs
+//! - Time-complexity hints
+//! - Static types for futures
+//! - Graph serialization (need runtime typechecking for graph hot-realoading)
+//! - Optional stack trace (basically already implemented this)
+
 // bunch of stuff: https://play.rust-lang.org/?version=stable&mode=debug&edition=2021&gist=778be5ba4d57087abc788b5901bd780d
 // some dyn shit: https://play.rust-lang.org/?version=stable&mode=debug&edition=2021&code=use%20std%3A%3Aany%3A%3ATypeId%3B%0A%0Astruct%20Symbol%3CT%3E(usize%2C%20PhantomData%3CT%3E)%3B%0A%0Astruct%20Node%3COutput%3E%7B%0A%20%20%20%20this_node%3A%20usize%2C%0A%20%20%20%20readers%3A%20Vec%3Cusize%3E%2C%0A%20%20%20%20output%3A%20Output%2C%0A%7D%0A%0Atrait%20Trace%7B%0A%20%20%20%20fn%20this_node(%26self)%20-%3E%20usize%3B%0A%20%20%20%20fn%20readers(%26self)%20-%3E%20Vec%3Cusize%3E%3B%0A%20%20%20%20fn%20output_type(%26self)%20-%3E%20TypeId%3B%0A%20%20%20%20%0A%20%20%20%20fn%20read%3CT%3E(%26mut%20self%2C%20name%3A%20%26str)%20-%3E%20Symbol%3CT%3E%7B%0A%20%20%20%20%20%20%20%20todo!()%3B%0A%20%20%20%20%7D%0A%7D%0A%0Astruct%20Graph%7B%0A%20%20%20%20nodes%3A%20Vec%3CBox%3Cdyn%20Trace%3E%3E%2C%0A%20%20%20%20is_locked%3A%20bool%2C%20%2F%2F%20any%20nodes%20spawned%20after%20is%20lock%20is%20set%2C%20will%20not%20be%20distributable%0A%7D%0A%0Astruct%20MainNode(*mut%20Graph)%3B%0A%0A%2F*%0Afn%20main()%7B%0A%20%20%20%20Graph%3A%3Anew().main(%7Cm%3A%20MainNode%7C%7B%0A%20%20%20%20%20%20%20%20m.spawn(%22x%22%2C%20Literal(2.3)%2C%20%5B%5D)%3B%0A%20%20%20%20%20%20%20%20m.spawn(%22y%22%2C%20Y%2C%20%5B%22x%22%5D)%3B%0A%20%20%20%20%20%20%20%20m.subgraph(%22mm%22%2C%20matmul)%3B%0A%20%20%20%20%20%20%20%20%2F%2F%20%22mm%22%20can%20only%20be%20a%20matmul%20graph%20tho.%20Not%20necessary%20if%20you%20can%20read%20nodes%20that%20have%20not%20been%20spawned%20yet.%0A%20%20%20%20%20%20%20%20%0A%20%20%20%20%20%20%20%20let%20y%20%3D%20m.read%3A%3A%3Cf32%3E(%22y%22)%3B%0A%20%20%20%20%20%20%20%20let%20x%20%3D%20m.read%3A%3A%3Cf32%3E(%22x%22)%3B%0A%20%20%20%20%20%20%20%20%0A%20%20%20%20%20%20%20%20async%20%7B%0A%20%20%20%20%20%20%20%20%20%20%20%20%2F%2F%20%60for%20n%20in%200..x.next().await%60%20cannot%20be%20concistently%20optimized%0A%20%20%20%20%20%20%20%20%20%20%20%20%2F%2F%20mby%3A%20%60executor.hint(ScalesWith(%7Cs%7C%20s%20*%20x))%60%0A%20%20%20%20%20%20%20%20%20%20%20%20for%20n%20in%200..10%7B%0A%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20let%20y%3A%20f32%20%3D%20y.next().await%3B%0A%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20let%20x%3A%20f32%20%3D%20x.next().await%3B%0A%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20println!(%22%7Bn%7D%3A%20f(%7Bx%7D)%20%3D%20%7By%7D%22)%3B%0A%20%20%20%20%20%20%20%20%20%20%20%20%7D%0A%20%20%20%20%20%20%20%20%20%20%20%20%0A%20%20%20%20%20%20%20%20%20%20%20%20%2F%2F%20Here%20the%20graph%20of%20%22mm%22%20can%20vary%20based%20on%20arguments%20that%20are%20computed%20inside%20async%20block!%0A%20%20%20%20%20%20%20%20%20%20%20%20m.init(%22mm%22%2C%20(10%2C%2010))%3B%0A%20%20%20%20%20%20%20%20%20%20%20%20%2F%2F%20%5E%5E%20Serialize%20and%20send%20arguments%20for%20initializing%20%22mm%22%20to%20all%20devices.%0A%20%20%20%20%20%20%20%20%20%20%20%20%2F%2F%20Initializing%20graph%20needs%20to%20be%20pure.%0A%20%20%20%20%20%20%20%20%7D%0A%20%20%20%20%7D)%0A%7D*%2F%0A%0A%0Atrait%20Symbolize%3CT%3E%7B%0A%20%20%20%20fn%20symbol(%26self)%20-%3E%20Symbol%3CT%3E%3B%20%20%20%20%0A%7D%0A%0A%0Aimpl%3CT%3E%20Symbolize%3CT%3E%20for%20Node%3CT%3E%7B%0A%20%20%20%20fn%20symbol(%26self)%20-%3E%20Symbol%3CT%3E%7B%0A%20%20%20%20%20%20%20%20Symbol(self.this_node)%0A%20%20%20%20%7D%0A%7D%0A%0A
 
@@ -70,10 +73,11 @@
 #![feature(future_join)]
 
 mod error;
-mod threadpool;
+mod workpool;
 
 use error::{Error, Result};
 use serde::{Deserialize, Serialize};
+use workpool::{MutPtr, Pool};
 
 use std::any::type_name;
 use std::future::Future;
@@ -90,9 +94,9 @@ use std::task::{Context, Poll, Wake};
 // Should impl Future with #[always_use]
 // the bool is if it has already been locked. So its not locked in a loop. (attached)
 #[derive(Clone, Copy)]
-struct Symbol<T: ?Sized>(*mut Node, PhantomData<T>);
+pub struct Symbol<T: ?Sized>(*mut Node, PhantomData<T>);
 #[derive(Clone, Copy)]
-struct OwnedSymbol<T: ?Sized>(*mut Node, *mut Node, PhantomData<T>);
+pub struct OwnedSymbol<T: ?Sized>(*mut Node, *mut Node, PhantomData<T>);
 
 impl<T: 'static> Future for OwnedSymbol<T> {
     type Output = &'static T;
@@ -134,6 +138,8 @@ impl<T: 'static> Future for OwnedSymbol<T> {
                 //}
                 (*self.1).qued = (*self.0).this_node;
                 (*self.0).qued = (*self.1).this_node;
+                // TODO: A node should be forked (moved to another device)
+                //       if the `que` already contains another node.
             }
             Poll::Pending
         }
@@ -143,7 +149,7 @@ impl<T: 'static> Future for OwnedSymbol<T> {
 // future could have a known type at compile time,
 // if it is allocated on the graphs bump allocator,
 // and Node provides a funtion pointer for polling and initializing it.
-struct Node {
+pub struct Node {
     name: &'static str,
     task: Box<dyn Fn() -> Pin<Box<dyn Future<Output = ()>>>>,
     future: Pin<Box<dyn Future<Output = ()>>>,
@@ -191,14 +197,14 @@ impl Node {
     }
 }
 
-struct Buffer {
+pub struct Buffer {
     data: *mut (),
     de: fn(&'static [u8], &mut ()) -> Result<()>,
     se: fn(&()) -> Result<Vec<u8>>,
 }
 
 impl Buffer {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             data: std::ptr::null_mut(),
             de: |_, _| Ok(()),
@@ -206,7 +212,7 @@ impl Buffer {
         }
     }
 
-    fn from<'a, T: Serialize + Deserialize<'a>>(data: &mut T) -> Self {
+    pub fn from<'a, T: Serialize + Deserialize<'a>>(data: &mut T) -> Self {
         Buffer {
             data: data as *mut _ as *mut (),
             de: |b, out| {
@@ -218,7 +224,7 @@ impl Buffer {
     }
 }
 
-struct Graph {
+pub struct Graph {
     // If this allocator is made reusable between graphs,
     // it would be safe to create a new graph inside an async block
     // and return a locked symbol from it. (also would require reusing the mpi universe)
@@ -227,14 +233,14 @@ struct Graph {
     _marker: PhantomPinned,
 }
 
-struct GraphHandle<'a, T: Task + ?Sized> {
+pub struct GraphHandle<'a, T: Task + ?Sized> {
     graph: &'a mut Graph,
     calling: usize,
     marker: PhantomData<T>,
 }
 
 impl<'a, T: Task> GraphHandle<'a, T> {
-    fn spawn<U: Task>(&mut self, task: U) -> U::InitOutput {
+    pub fn spawn<U: Task>(&mut self, task: U) -> U::InitOutput {
         let id = self.calling;
         self.calling = self.graph.nodes.len();
         self.graph.nodes.push(Node::new(self.calling));
@@ -245,7 +251,7 @@ impl<'a, T: Task> GraphHandle<'a, T> {
     }
 
     // attaches edge to self.
-    fn own_symbol<U>(&mut self, s: Symbol<U>) -> OwnedSymbol<U> {
+    pub fn own_symbol<U>(&mut self, s: Symbol<U>) -> OwnedSymbol<U> {
         unsafe {
             // (*s.0).readers.push(self.calling);
             (*s.0).readers += 1;
@@ -255,7 +261,7 @@ impl<'a, T: Task> GraphHandle<'a, T> {
         OwnedSymbol(s.0, &mut self.graph.nodes[self.calling] as *mut _, s.1)
     }
 
-    fn output(&mut self) -> *mut T::Output
+    pub fn output(&mut self) -> *mut T::Output
     where
         <T as Task>::Output: Deserialize<'static> + Serialize,
         // If this size bound is removed, the compiler complains about casting thin pointer to a fat one...
@@ -268,26 +274,26 @@ impl<'a, T: Task> GraphHandle<'a, T> {
         ptr
     }
 
-    fn use_output(&mut self, o: &mut T::Output)
+    pub fn use_output(&mut self, o: &mut T::Output)
     where
         <T as Task>::Output: Deserialize<'static> + Serialize,
     {
         self.graph.nodes[self.calling].output = Buffer::from(o);
     }
 
-    fn task(&mut self, task: Box<dyn Fn() -> Pin<Box<dyn Future<Output = ()>>>>) {
+    pub fn task(&mut self, task: Box<dyn Fn() -> Pin<Box<dyn Future<Output = ()>>>>) {
         self.graph.nodes[self.calling].task = task;
     }
 
-    fn this_node(&mut self) -> Symbol<T::Output> {
+    pub fn this_node(&mut self) -> Symbol<T::Output> {
         Symbol(&mut self.graph.nodes[self.calling] as *mut _, PhantomData)
     }
 
-    fn alloc<U>(&mut self, val: U) -> &mut U {
+    pub fn alloc<U>(&mut self, val: U) -> &mut U {
         self.graph.bump.alloc(val)
     }
 
-    fn uninit_buffer(&mut self)
+    pub fn uninit_buffer(&mut self)
     where
         <T as Task>::Output: Deserialize<'static> + Serialize,
     {
@@ -298,10 +304,8 @@ impl<'a, T: Task> GraphHandle<'a, T> {
     }
 }
 
-struct GraphSegment(Vec<usize>);
-
 impl Graph {
-    fn handle<'a>(&'a mut self) -> GraphHandle<'a, ()> {
+    pub fn handle<'a>(&'a mut self) -> GraphHandle<'a, ()> {
         GraphHandle {
             graph: self,
             calling: 0,
@@ -309,7 +313,7 @@ impl Graph {
         }
     }
 
-    fn new() -> Self {
+    pub fn new() -> Self {
         Graph {
             bump: bumpalo::Bump::new(),
             nodes: vec![],
@@ -317,11 +321,10 @@ impl Graph {
         }
     }
 
-    fn compute(&mut self, owned_nodes: GraphSegment) {
-        // TODO: Executor needs to check for forks, and push them to thread pool.
-        for n in &mut self.nodes {
-            n.respawn()
-        }
+    pub fn compute(&mut self, mut node: usize, pool: MutPtr<Pool>) {
+        // TODO:
+        // - [ ] Executor needs to check for forks, and push them to thread pool.
+        // - [ ] Check if node is being polled elsewhere.
 
         let waker = Arc::new(NilWaker).into();
         let mut cx = Context::from_waker(&waker);
@@ -331,10 +334,7 @@ impl Graph {
             if self.nodes[node].done {
                 panic!("Cycle!")
             }
-            if owned_nodes.0.contains(&node) {
-                // TODO: This is slow. Find a better way
-                panic!("Caller does not own {node}")
-            }
+
             //self.nodes[node].qued = 0;
             match Pin::new(&mut self.nodes[node].future).poll(&mut cx) {
                 Poll::Ready(()) => {
@@ -372,18 +372,27 @@ impl Graph {
         }
     }
 
-    fn realize(&mut self) {
-        self.compute(GraphSegment((0..self.nodes.len()).collect()))
+    pub fn realize(&mut self) {
+        for n in &mut self.nodes {
+            n.respawn()
+        }
+        let mut pool = Pool::new(self.ptr());
+        self.compute(0, pool.handle());
+        pool.kill();
     }
 
     fn name_of(&self, n: usize) -> &'static str {
         self.nodes[n].name
     }
 
-    fn print(&self) {
+    pub fn print(&self) {
         for n in 0..self.nodes.len() {
             println!("{n} -> {:?}", self.nodes[n].readers);
         }
+    }
+
+    fn ptr(&mut self) -> MutPtr<Self> {
+        MutPtr::from(self)
     }
 }
 
@@ -399,7 +408,7 @@ impl Wake for NilWaker {
 // let symbol: Symbol(ptr) = symbol.lock();
 // graph.task(|_|async{ return symbol.await })
 
-trait Task {
+pub trait Task {
     type InitOutput;
     type Output: ?Sized;
     fn init(self, graph: &mut GraphHandle<Self>) -> Self::InitOutput;
@@ -457,6 +466,15 @@ mod test {
         }
     }
 
+    // # This does not need to be multithreaded...
+    // metalmorphosis::test::Y::0 -> metalmorphosis::test::F::2
+    // metalmorphosis::test::F::2 -> metalmorphosis::test::X::1
+    // metalmorphosis::test::F::2 <- metalmorphosis::test::X::1
+    // metalmorphosis::test::X::1 <- metalmorphosis::test::F::2
+    //
+    // TODO: VVV
+    // Dont distribute if:
+    // qued node of node that forked (a), is awaiting a
     struct Y;
     impl Task for Y {
         type InitOutput = ();
@@ -467,7 +485,9 @@ mod test {
             let f = graph.own_symbol(f);
             let x = graph.own_symbol(x);
             task!(graph, {
-                let (x, y) = join!(x, f).await;
+                //let (x, y) = join!(x, f).await;
+                let y = f.await;
+                let x = x.await;
                 println!("f({x}) = {y}")
             });
         }

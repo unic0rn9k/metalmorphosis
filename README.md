@@ -33,6 +33,8 @@
 
 ### Extra
 - Allocator reusablility for dynamic graphs
-- const graphs
-- time-complexity hints
-- static types for futures
+- Const graphs
+- Time-complexity hints
+- Static types for futures
+- Graph serialization (need runtime typechecking for graph hot-realoading)
+- Optional stack trace (basically already implemented this)
