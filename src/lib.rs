@@ -350,7 +350,7 @@ impl Graph {
                 .swap(true, Ordering::SeqCst)
             {
                 // TODO: Don't just spin, do something!
-                continue;
+                panic!("You spin me right right round");
             }
 
             match Pin::new(&mut self.nodes[node].future).poll(&mut cx) {

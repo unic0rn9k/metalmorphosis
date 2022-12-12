@@ -149,9 +149,9 @@ impl Pool {
         // TODO: MPI distribute distribute!
         let threads = std::thread::available_parallelism().unwrap().into();
         for thread_id in 0..threads {
-            let mut worker = Worker::new(pool.device_id(thread_id));
-
+            let worker = Worker::new(pool.device_id(thread_id));
             pool.worker_handles.push(worker);
+
             let worker = (*pool.ptr()).worker_handles.last_mut().unwrap();
 
             pool.clone()
@@ -200,7 +200,7 @@ impl Pool {
         self.thread_handles[device.thread_id].thread().unpark();
 
         let mut bruh = worker.task.load(Ordering::SeqCst);
-        while bruh > 0 {
+        while bruh >= 0 {
             bruh = worker.task.load(Ordering::SeqCst);
         }
     }
