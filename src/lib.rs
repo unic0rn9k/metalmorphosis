@@ -73,7 +73,6 @@
 
 #![cfg(test)]
 #![feature(test)]
-#![feature(future_join)]
 
 mod error;
 mod workpool;
@@ -285,7 +284,8 @@ impl<'a, T: Task> GraphHandle<'a, T> {
         ptr
     }
 
-    pub fn use_output(&mut self, o: &mut T::Output)
+    /// Make sure `o` lives for long enough... Cause I won't
+    pub unsafe fn use_output(&mut self, o: &mut T::Output)
     where
         <T as Task>::Output: Deserialize<'static> + Serialize,
     {
@@ -449,7 +449,7 @@ macro_rules! task {
         $graph.task(Box::new(move || {
             Box::pin(async move {
                 let f = $f;
-                unsafe { *out = f }
+                *out = f;
             })
         }));
     };
@@ -458,7 +458,8 @@ macro_rules! task {
 #[cfg(test)]
 mod test {
     extern crate test;
-    use std::future::join;
+    //#![feature(future_join)]
+    //use std::future::join;
 
     use test::black_box;
     use test::Bencher;
