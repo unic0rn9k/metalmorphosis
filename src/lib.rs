@@ -69,8 +69,8 @@
 #![feature(test)]
 #![feature(future_join)]
 
-//mod buffer;
 mod error;
+mod threadpool;
 
 use error::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -298,6 +298,8 @@ impl<'a, T: Task> GraphHandle<'a, T> {
     }
 }
 
+struct GraphSegment(Vec<usize>);
+
 impl Graph {
     fn handle<'a>(&'a mut self) -> GraphHandle<'a, ()> {
         GraphHandle {
@@ -315,7 +317,7 @@ impl Graph {
         }
     }
 
-    fn realize(&mut self) {
+    fn compute(&mut self, owned_nodes: GraphSegment) {
         // TODO: Executor needs to check for forks, and push them to thread pool.
         for n in &mut self.nodes {
             n.respawn()
@@ -328,6 +330,10 @@ impl Graph {
         loop {
             if self.nodes[node].done {
                 panic!("Cycle!")
+            }
+            if owned_nodes.0.contains(&node) {
+                // TODO: This is slow. Find a better way
+                panic!("Caller does not own {node}")
             }
             //self.nodes[node].qued = 0;
             match Pin::new(&mut self.nodes[node].future).poll(&mut cx) {
@@ -364,6 +370,10 @@ impl Graph {
                 }
             }
         }
+    }
+
+    fn realize(&mut self) {
+        self.compute(GraphSegment((0..self.nodes.len()).collect()))
     }
 
     fn name_of(&self, n: usize) -> &'static str {
