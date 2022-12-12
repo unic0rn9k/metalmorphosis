@@ -96,6 +96,7 @@ impl Pool {
     }
 
     unsafe fn init(mut pool: PoolHandle) {
+        // TODO: MPI distribute distribute!
         let threads = std::thread::available_parallelism().unwrap().into();
         for thread_id in 0..threads {
             let mut worker = Worker::new(DeviceID {
@@ -145,6 +146,7 @@ impl Pool {
     }
 
     pub fn assign(&mut self, task: usize, worker: DeviceID) {
+        // TODO: Don't take a worker as argument. Find one!
         self.worker_handles[worker.thread_id]
             .task
             .store(task as isize, Ordering::SeqCst);
