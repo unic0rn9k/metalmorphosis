@@ -400,7 +400,8 @@ impl Graph {
             n.respawn()
         }
         let mut pool = Pool::new(unsafe { &mut *(self as *mut Self) });
-        self.compute(0, pool.handle());
+        //self.compute(0, pool.handle());
+        pool.assign(0);
         pool.kill();
     }
 

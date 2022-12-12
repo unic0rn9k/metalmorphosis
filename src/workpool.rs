@@ -12,9 +12,62 @@ pub struct DeviceID {
     thread_id: usize,
 }
 
+impl DeviceID {
+    pub fn unoccupied(&self) -> DeviceOccupancyNode {
+        DeviceOccupancyNode {
+            last_thread: AtomicIsize::new(self.thread_id as isize),
+            last_mpi: AtomicIsize::new(self.mpi_id as isize),
+        }
+    }
+}
+
+pub struct DeviceOccupancyNode {
+    last_thread: AtomicIsize,
+    last_mpi: AtomicIsize,
+}
+
+impl DeviceOccupancyNode {
+    pub fn device(&self) -> Option<DeviceID> {
+        let mpi = self.last_mpi.load(Ordering::SeqCst);
+        let thread = self.last_thread.load(Ordering::SeqCst);
+        if mpi < 0 || thread < 0 {
+            None
+        } else {
+            Some(DeviceID {
+                mpi_id: mpi as usize,
+                thread_id: thread as usize,
+            })
+        }
+    }
+
+    pub fn swap(&mut self, other: &mut Self) {
+        let ord = Ordering::SeqCst;
+        let mut mpi = self.last_mpi.load(ord);
+        let mut thread = self.last_thread.load(ord);
+        mpi = other.last_mpi.swap(mpi, ord);
+        thread = other.last_thread.swap(thread, ord);
+        self.last_mpi.store(mpi, ord);
+        self.last_thread.store(thread, ord);
+    }
+
+    pub fn thread_local_swap(&mut self, other: &mut Self) {
+        let ord = Ordering::SeqCst;
+        let mut thread = self.last_thread.load(ord);
+        thread = other.last_thread.swap(thread, ord);
+        self.last_thread.store(thread, ord);
+    }
+
+    pub fn new() -> Self {
+        DeviceOccupancyNode {
+            last_thread: AtomicIsize::new(-1),
+            last_mpi: AtomicIsize::new(-1),
+        }
+    }
+}
+
 pub struct Worker {
     task: AtomicIsize,
-    available_neighbor: DeviceID,
+    last_unoccupied: DeviceOccupancyNode,
     home: DeviceID,
 }
 
@@ -22,10 +75,7 @@ impl Worker {
     pub fn new(home: DeviceID) -> Self {
         Self {
             task: AtomicIsize::new(-1),
-            available_neighbor: DeviceID {
-                mpi_id: 0,
-                thread_id: 0,
-            },
+            last_unoccupied: home.unoccupied(),
             home,
         }
     }
@@ -76,7 +126,7 @@ impl<T> DerefMut for MutPtr<T> {
 pub struct Pool {
     graph: *mut Graph,
     mpi_id: usize, // What machine does this pool live on?
-    last_available: AtomicIsize,
+    last_unoccupied: DeviceOccupancyNode,
     thread_handles: Vec<JoinHandle<()>>,
     worker_handles: Vec<Worker>,
 }
@@ -87,7 +137,7 @@ impl Pool {
         let mut tmp = Self {
             graph: graph as *mut _,
             mpi_id: 0,
-            last_available: AtomicIsize::new(-1),
+            last_unoccupied: DeviceOccupancyNode::new(),
             thread_handles: vec![],
             worker_handles: vec![],
         };
@@ -99,10 +149,7 @@ impl Pool {
         // TODO: MPI distribute distribute!
         let threads = std::thread::available_parallelism().unwrap().into();
         for thread_id in 0..threads {
-            let mut worker = Worker::new(DeviceID {
-                mpi_id: 0,
-                thread_id,
-            });
+            let mut worker = Worker::new(pool.device_id(thread_id));
 
             pool.worker_handles.push(worker);
             let worker = (*pool.ptr()).worker_handles.last_mut().unwrap();
@@ -110,16 +157,16 @@ impl Pool {
             pool.clone()
                 .thread_handles
                 .push(thread::spawn(move || loop {
-                    let last_available = pool
-                        .last_available
-                        .swap(pool.last_available.load(Ordering::SeqCst), Ordering::SeqCst);
-                    pool.last_available.store(last_available, Ordering::SeqCst);
+                    pool.last_unoccupied.swap(&mut worker.last_unoccupied);
 
                     let mut task = worker.task.load(Ordering::Acquire);
                     while task < 0 {
                         thread::park();
                         task = worker.task.load(Ordering::Acquire);
                     }
+
+                    #[cfg(test)]
+                    println!("Polling {task} on thread:{}", worker.home.thread_id);
 
                     unsafe {
                         (*pool.graph).compute(task as usize, pool);
@@ -145,20 +192,37 @@ impl Pool {
         PoolHandle::from(self)
     }
 
-    pub fn assign(&mut self, task: usize, worker: DeviceID) {
+    pub fn assign(&mut self, task: usize) {
         // TODO: Don't take a worker as argument. Find one!
-        self.worker_handles[worker.thread_id]
-            .task
-            .store(task as isize, Ordering::SeqCst);
-        self.thread_handles[worker.thread_id].thread().unpark();
+        let device = self.pop_device();
+        let worker = &mut self.worker_handles[device.thread_id];
+        worker.task.store(task as isize, Ordering::SeqCst);
+        self.thread_handles[device.thread_id].thread().unpark();
 
-        let mut bruh = self.worker_handles[worker.thread_id]
-            .task
-            .load(Ordering::SeqCst);
+        let mut bruh = worker.task.load(Ordering::SeqCst);
         while bruh > 0 {
-            bruh = self.worker_handles[worker.thread_id]
-                .task
-                .load(Ordering::SeqCst);
+            bruh = worker.task.load(Ordering::SeqCst);
+        }
+    }
+
+    fn device_id(&self, thread_id: usize) -> DeviceID {
+        DeviceID {
+            mpi_id: self.mpi_id,
+            thread_id,
+        }
+    }
+
+    pub fn pop_device(&mut self) -> DeviceID {
+        match self.last_unoccupied.device() {
+            Some(device) => {
+                if device.mpi_id != self.mpi_id {
+                    todo!("Another MPI instance")
+                }
+                self.last_unoccupied
+                    .swap(&mut self.worker_handles[device.thread_id].last_unoccupied);
+                device
+            }
+            None => panic!("This is so sad. Were all OUT OF DEVICES"),
         }
     }
 }
