@@ -30,6 +30,7 @@
 //!     - don't time awaits inside node
 //!     - reusing output in node would confuse executor
 //! - [ ] Benchmark distributed
+//!     - if I'm in a crunch for time, mby just make a synthetic benchmark... `thread::sleep(Duration::from_millis(10))`
 //!
 //! ## Extra
 //! - Allocator reusablility for dynamic graphs
