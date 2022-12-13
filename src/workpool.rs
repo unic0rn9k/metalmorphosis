@@ -230,6 +230,7 @@ impl Pool {
             //self.worker_handles[n].task.store(-2, Ordering::SeqCst);
             fence(Ordering::SeqCst);
             self.worker_handles[n].task.store(-2, Ordering::SeqCst);
+            assert_eq!(self.worker_handles[n].task.load(Ordering::SeqCst), -2); // Virker
 
             //println!("...");
             //}
