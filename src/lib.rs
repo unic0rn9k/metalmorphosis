@@ -90,6 +90,7 @@ use std::sync::atomic::Ordering::{self, SeqCst};
 use std::sync::atomic::{AtomicBool, AtomicIsize};
 use std::sync::Arc;
 use std::task::{Context, Poll, Wake};
+use std::time::Duration;
 
 #[derive(Clone, Copy)]
 pub struct Symbol<T>(*mut Node, PhantomData<T>);
@@ -241,7 +242,6 @@ pub struct Graph {
     _marker: PhantomPinned,
     // sub_graphs: Vec<GraphSpawner>
 }
-unsafe impl Sync for Graph {}
 
 pub struct GraphHandle<'a, T: Task + ?Sized> {
     graph: &'a mut Graph,
@@ -335,7 +335,7 @@ impl Graph {
     pub fn compute(&mut self, mut node: usize, pool: PoolHandle) {
         // TODO:
         // - [ ] Executor needs to check for forks, and push them to thread pool.
-        // - [ ] Check if node is being polled elsewhere.
+        // - [X] Check if node is being polled elsewhere.
 
         let waker = Arc::new(NilWaker).into();
         let mut cx = Context::from_waker(&waker);
@@ -402,6 +402,8 @@ impl Graph {
         let mut pool = Pool::new(unsafe { &mut *(self as *mut Self) });
         //self.compute(0, pool.handle());
         pool.assign(0);
+        //pool.assign(-2);
+        std::thread::sleep(Duration::from_secs(1));
         pool.kill();
     }
 

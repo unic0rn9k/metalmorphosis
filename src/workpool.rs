@@ -1,9 +1,34 @@
 use std::{
+    hint::black_box,
     ops::{Deref, DerefMut},
     ptr::null_mut,
-    sync::atomic::{AtomicIsize, Ordering},
+    sync::atomic::{fence, AtomicIsize, Ordering},
     thread::{self, JoinHandle},
 };
+
+//struct AtomicIsize(isize);
+//impl AtomicIsize {
+//    fn load(&self, _: Ordering) -> isize {
+//        let mut a = black_box(self.0);
+//        while a != self.0 {
+//            a = black_box(self.0)
+//        }
+//        a
+//    }
+//    fn store(&mut self, val: isize, _: Ordering) {
+//        while self.0 != val {
+//            self.0 = black_box(val);
+//        }
+//    }
+//    fn swap(&mut self, val: isize, o: Ordering) -> isize {
+//        let a = self.load(o);
+//        self.store(val, o);
+//        a
+//    }
+//    fn new(val: isize) -> Self {
+//        Self(val)
+//    }
+//}
 
 use crate::{error::Result, Graph};
 
@@ -148,21 +173,31 @@ impl Pool {
     unsafe fn init(mut pool: PoolHandle) {
         // TODO: MPI distribute distribute!
         let threads = std::thread::available_parallelism().unwrap().into();
+        //let threads = 4;
         for thread_id in 0..threads {
             let worker = Worker::new(pool.device_id(thread_id));
             pool.worker_handles.push(worker);
 
-            let worker = (*pool.ptr()).worker_handles.last_mut().unwrap();
+            let worker = &mut (*pool.ptr()).worker_handles[thread_id];
 
             pool.clone()
                 .thread_handles
                 .push(thread::spawn(move || loop {
+                    println!("Worker {} says Hi", worker.home.thread_id);
                     pool.last_unoccupied.swap(&mut worker.last_unoccupied);
 
                     let mut task = worker.task.load(Ordering::Acquire);
-                    while task < 0 {
+                    while task == -1 {
                         thread::park();
                         task = worker.task.load(Ordering::Acquire);
+                        fence(Ordering::SeqCst);
+                    }
+                    //fence(Ordering::SeqCst);
+
+                    println!("{} Awoken to task:{task}", worker.home.thread_id);
+                    if task == -2 {
+                        println!("{} Dead", worker.home.thread_id);
+                        return;
                     }
 
                     #[cfg(test)]
@@ -177,13 +212,41 @@ impl Pool {
         }
     }
 
-    pub fn kill(self) {
-        // use std::panic;
-        //for worker in self.thread_handles {
-        //    if let Err(e) = worker.join() {
-        //        panic::resume_unwind(e);
-        //    }
+    pub fn kill(mut self) {
+        use std::panic;
+
+        //for n in 0..self.worker_handles.len() {
+        //    self.assign(-2);
         //}
+
+        for n in 0..self.worker_handles.len() {
+            println!("Killing {n}");
+            //self.worker_handles[n].task.store(-2, Ordering::SeqCst);
+            //self.thread_handles[n].thread().unpark();
+            //self.worker_handles[n].task.store(-2, Ordering::SeqCst);
+
+            //fence(Ordering::SeqCst);
+            //while self.worker_handles[n].task.load(Ordering::Acquire) != -2 {
+            //self.worker_handles[n].task.store(-2, Ordering::SeqCst);
+            fence(Ordering::SeqCst);
+            self.worker_handles[n].task.store(-2, Ordering::SeqCst);
+
+            //println!("...");
+            //}
+            //fence(Ordering::SeqCst);
+
+            assert_eq!(self.worker_handles[n].task.load(Ordering::SeqCst), -2);
+            self.thread_handles[n].thread().unpark();
+            assert_eq!(self.worker_handles[n].task.load(Ordering::SeqCst), -2);
+        }
+
+        for n in 0..self.worker_handles.len() {
+            println!("Killing {n}");
+            self.thread_handles[n].thread().unpark();
+            if let Err(e) = self.thread_handles.swap_remove(n).join() {
+                panic::resume_unwind(e);
+            }
+        }
     }
 
     pub fn is_this_device(&self, device: DeviceID) -> bool {
@@ -194,11 +257,10 @@ impl Pool {
         PoolHandle::from(self)
     }
 
-    pub fn assign(&mut self, task: usize) {
-        // TODO: Don't take a worker as argument. Find one!
+    pub fn assign(&mut self, task: isize) {
         let device = self.pop_device();
         let worker = &mut self.worker_handles[device.thread_id];
-        worker.task.store(task as isize, Ordering::SeqCst);
+        worker.task.store(task as isize, Ordering::Release);
         self.thread_handles[device.thread_id].thread().unpark();
 
         let mut bruh = worker.task.load(Ordering::SeqCst);
