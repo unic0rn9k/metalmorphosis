@@ -242,6 +242,7 @@ pub struct Graph {
     _marker: PhantomPinned,
     // sub_graphs: Vec<GraphSpawner>
 }
+unsafe impl Sync for Graph {}
 
 pub struct GraphHandle<'a, T: Task + ?Sized> {
     graph: &'a mut Graph,
@@ -399,11 +400,11 @@ impl Graph {
         for n in &mut self.nodes {
             n.respawn()
         }
-        let mut pool = Pool::new(unsafe { &mut *(self as *mut Self) });
+        let pool = Pool::new(unsafe { &mut *(self as *mut Self) });
         //self.compute(0, pool.handle());
         pool.assign(0);
         //pool.assign(-2);
-        std::thread::sleep(Duration::from_secs(1));
+        //std::thread::sleep(Duration::from_secs(1));
         pool.kill();
     }
 

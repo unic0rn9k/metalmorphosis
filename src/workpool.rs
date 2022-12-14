@@ -1,8 +1,11 @@
 use std::{
-    hint::black_box,
     ops::{Deref, DerefMut},
+    pin::Pin,
     ptr::null_mut,
-    sync::atomic::{fence, AtomicIsize, Ordering},
+    sync::{
+        atomic::{fence, AtomicIsize, Ordering},
+        Arc, Mutex,
+    },
     thread::{self, JoinHandle},
 };
 
@@ -65,7 +68,7 @@ impl DeviceOccupancyNode {
         }
     }
 
-    pub fn swap(&mut self, other: &mut Self) {
+    pub fn swap(&self, other: &Self) {
         let ord = Ordering::SeqCst;
         let mut mpi = self.last_mpi.load(ord);
         let mut thread = self.last_thread.load(ord);
@@ -75,7 +78,7 @@ impl DeviceOccupancyNode {
         self.last_thread.store(thread, ord);
     }
 
-    pub fn thread_local_swap(&mut self, other: &mut Self) {
+    pub fn thread_local_swap(&self, other: &Self) {
         let ord = Ordering::SeqCst;
         let mut thread = self.last_thread.load(ord);
         thread = other.last_thread.swap(thread, ord);
@@ -109,6 +112,7 @@ impl Worker {
 // Oh god. What is this?
 pub struct MutPtr<T>(*mut T);
 unsafe impl<T> Send for MutPtr<T> {}
+unsafe impl<T> Sync for MutPtr<T> {}
 impl<T> MutPtr<T> {
     pub fn from<U>(s: &mut U) -> Self {
         Self(s as *mut U as *mut T)
@@ -149,70 +153,72 @@ impl<T> DerefMut for MutPtr<T> {
 }
 
 pub struct Pool {
-    graph: *mut Graph,
+    graph: MutPtr<Graph>,
     mpi_id: usize, // What machine does this pool live on?
     last_unoccupied: DeviceOccupancyNode,
     thread_handles: Vec<JoinHandle<()>>,
-    worker_handles: Vec<Worker>,
+    worker_handles: Vec<Arc<Worker>>,
 }
-pub type PoolHandle = MutPtr<Pool>;
+pub type PoolHandle = Arc<Pool>;
 
+// Pool har ikke brug for mutable access til self efter den er blevet initialized.
+// Atomic operations er ikke mut. Thread operations er heller ikke mut.
+// Bare wrap dit lort i Arc, og så skulle den være gucci?
 impl Pool {
-    pub fn new(graph: &mut Graph) -> Self {
-        let mut tmp = Self {
-            graph: graph as *mut _,
+    pub fn new(graph: &mut Graph) -> Arc<Self> {
+        let tmp = Arc::new(Self {
+            graph: MutPtr::from(graph),
             mpi_id: 0,
             last_unoccupied: DeviceOccupancyNode::new(),
             thread_handles: vec![],
             worker_handles: vec![],
-        };
-        unsafe { Self::init(PoolHandle::from(&mut tmp)) }
+        });
+        tmp.clone().init();
         tmp
     }
 
-    unsafe fn init(mut pool: PoolHandle) {
+    fn init(self: Arc<Self>) {
         // TODO: MPI distribute distribute!
         let threads = std::thread::available_parallelism().unwrap().into();
         //let threads = 4;
+
+        let mut_self = unsafe { &mut *(Arc::as_ptr(&self) as *mut Self) };
         for thread_id in 0..threads {
-            let worker = Worker::new(pool.device_id(thread_id));
-            pool.worker_handles.push(worker);
+            let worker = Arc::new(Worker::new(self.device_id(thread_id)));
+            mut_self.worker_handles.push(worker.clone());
 
-            let worker = &mut (*pool.ptr()).worker_handles[thread_id];
+            let pool = self.clone();
+            mut_self.thread_handles.push(thread::spawn(move || loop {
+                println!("Worker {} says Hi", worker.home.thread_id);
+                pool.last_unoccupied.swap(&worker.last_unoccupied);
 
-            pool.clone()
-                .thread_handles
-                .push(thread::spawn(move || loop {
-                    println!("Worker {} says Hi", worker.home.thread_id);
-                    pool.last_unoccupied.swap(&mut worker.last_unoccupied);
+                let mut task = worker.task.load(Ordering::Acquire);
+                while task == -1 {
+                    thread::park();
+                    task = worker.task.load(Ordering::Acquire);
+                    fence(Ordering::SeqCst);
+                }
+                //fence(Ordering::SeqCst);
 
-                    let mut task = worker.task.load(Ordering::Acquire);
-                    while task == -1 {
-                        thread::park();
-                        task = worker.task.load(Ordering::Acquire);
-                        fence(Ordering::SeqCst);
-                    }
-                    //fence(Ordering::SeqCst);
+                println!("{} Awoken to task:{task}", worker.home.thread_id);
+                if task == -2 {
+                    println!("{} Dead", worker.home.thread_id);
+                    return;
+                }
 
-                    println!("{} Awoken to task:{task}", worker.home.thread_id);
-                    if task == -2 {
-                        println!("{} Dead", worker.home.thread_id);
-                        return;
-                    }
+                #[cfg(test)]
+                println!("Polling {task} on thread:{}", worker.home.thread_id);
 
-                    #[cfg(test)]
-                    println!("Polling {task} on thread:{}", worker.home.thread_id);
+                unsafe {
+                    pool.graph.clone().compute(task as usize, pool.clone());
+                }
 
-                    unsafe {
-                        (*pool.graph).compute(task as usize, pool);
-                    }
-
-                    worker.task.store(-1, Ordering::SeqCst);
-                }));
+                worker.task.store(-1, Ordering::SeqCst);
+            }));
         }
     }
 
-    pub fn kill(mut self) {
+    pub fn kill(mut self: Arc<Self>) {
         use std::panic;
 
         //for n in 0..self.worker_handles.len() {
@@ -244,9 +250,9 @@ impl Pool {
         for n in 0..self.worker_handles.len() {
             println!("Killing {n}");
             self.thread_handles[n].thread().unpark();
-            if let Err(e) = self.thread_handles.swap_remove(n).join() {
-                panic::resume_unwind(e);
-            }
+            //if let Err(e) = self.thread_handles.swap_remove(n).join() {
+            //    panic::resume_unwind(e);
+            //}
         }
     }
 
@@ -254,13 +260,13 @@ impl Pool {
         self.mpi_id == device.mpi_id
     }
 
-    pub fn handle(&mut self) -> PoolHandle {
-        PoolHandle::from(self)
-    }
+    //pub fn handle(&mut self) -> PoolHandle {
+    //    PoolHandle::from(self)
+    //}
 
-    pub fn assign(&mut self, task: isize) {
+    pub fn assign(self: &Arc<Self>, task: isize) {
         let device = self.pop_device();
-        let worker = &mut self.worker_handles[device.thread_id];
+        let worker = &self.worker_handles[device.thread_id];
         worker.task.store(task as isize, Ordering::Release);
         self.thread_handles[device.thread_id].thread().unpark();
 
@@ -277,14 +283,14 @@ impl Pool {
         }
     }
 
-    pub fn pop_device(&mut self) -> DeviceID {
+    pub fn pop_device(self: &Arc<Self>) -> DeviceID {
         match self.last_unoccupied.device() {
             Some(device) => {
                 if device.mpi_id != self.mpi_id {
                     todo!("Another MPI instance")
                 }
                 self.last_unoccupied
-                    .swap(&mut self.worker_handles[device.thread_id].last_unoccupied);
+                    .swap(&self.worker_handles[device.thread_id].last_unoccupied);
                 device
             }
             None => panic!("This is so sad. Were all OUT OF DEVICES"),
