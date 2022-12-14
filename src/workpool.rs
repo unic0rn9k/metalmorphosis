@@ -164,6 +164,13 @@ pub type PoolHandle = Arc<Pool>;
 // Pool har ikke brug for mutable access til self efter den er blevet initialized.
 // Atomic operations er ikke mut. Thread operations er heller ikke mut.
 // Bare wrap dit lort i Arc, og så skulle den være gucci?
+
+// # Next up
+// - [ ] Mby do some box magic in Graph::output, so that MutPtr is not needed.
+//       also try implementing Sync for pool, and use *mut Graph
+// - [ ] Wrap stuff in result
+// - [ ] Unit test/ bench multithreading
+// - [ ] Node.qued is not atomic
 impl Pool {
     pub fn new(graph: &mut Graph) -> Arc<Self> {
         let tmp = Arc::new(Self {
@@ -180,7 +187,6 @@ impl Pool {
     fn init(self: Arc<Self>) {
         // TODO: MPI distribute distribute!
         let threads = std::thread::available_parallelism().unwrap().into();
-        //let threads = 4;
 
         let mut_self = unsafe { &mut *(Arc::as_ptr(&self) as *mut Self) };
         for thread_id in 0..threads {
@@ -219,28 +225,15 @@ impl Pool {
     }
 
     pub fn kill(mut self: Arc<Self>) {
+        // TODO: Check that reference count of self is equal to the number of threads
         use std::panic;
-
-        //for n in 0..self.worker_handles.len() {
-        //    self.assign(-2);
-        //}
 
         for n in 0..self.worker_handles.len() {
             println!("Killing {n}");
-            //self.worker_handles[n].task.store(-2, Ordering::SeqCst);
-            //self.thread_handles[n].thread().unpark();
-            //self.worker_handles[n].task.store(-2, Ordering::SeqCst);
 
-            //fence(Ordering::SeqCst);
-            //while self.worker_handles[n].task.load(Ordering::Acquire) != -2 {
-            //self.worker_handles[n].task.store(-2, Ordering::SeqCst);
             fence(Ordering::SeqCst);
             self.worker_handles[n].task.store(-2, Ordering::SeqCst);
             assert_eq!(self.worker_handles[n].task.load(Ordering::SeqCst), -2); // Virker
-
-            //println!("...");
-            //}
-            //fence(Ordering::SeqCst);
 
             assert_eq!(self.worker_handles[n].task.load(Ordering::SeqCst), -2);
             self.thread_handles[n].thread().unpark();
