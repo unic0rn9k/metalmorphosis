@@ -79,14 +79,14 @@ mod workpool;
 
 use error::{Error, Result};
 use serde::{Deserialize, Serialize};
-use workpool::{MutPtr, Pool, PoolHandle};
+use workpool::{MutPtr, Pool};
 
 use std::any::type_name;
 use std::future::Future;
 use std::marker::{PhantomData, PhantomPinned};
 use std::mem::transmute;
 use std::pin::Pin;
-use std::sync::atomic::Ordering::{self, SeqCst};
+use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool, AtomicIsize};
 use std::sync::Arc;
 use std::task::{Context, Poll, Wake};
@@ -110,7 +110,7 @@ impl<T: 'static> Future for OwnedSymbol<T> {
     ) -> std::task::Poll<Self::Output> {
         unsafe {
             if (*self.0).done {
-                let rc = (*self.0).rc.fetch_sub(1, SeqCst);
+                let rc = (*self.0).rc.fetch_sub(1, Ordering::Relaxed);
                 if rc >= 0 {
                     return Poll::Ready(transmute((*self.0).output.data));
                 }
@@ -240,6 +240,8 @@ pub struct Graph {
     bump: bumpalo::Bump,
     nodes: Vec<Node>,
     _marker: PhantomPinned,
+    stack_trace: Vec<String>,
+    collect_stack_trace: bool,
     // sub_graphs: Vec<GraphSpawner>
 }
 unsafe impl Sync for Graph {}
@@ -330,10 +332,12 @@ impl Graph {
             bump: bumpalo::Bump::new(),
             nodes: vec![],
             _marker: PhantomPinned,
+            stack_trace: vec![],
+            collect_stack_trace: false,
         }
     }
 
-    pub fn compute(&mut self, mut node: usize, pool: PoolHandle) {
+    pub fn compute(&mut self, mut node: usize, pool: Arc<Pool>) {
         // TODO:
         // - [ ] Executor needs to check for forks, and push them to thread pool.
         // - [X] Check if node is being polled elsewhere.
@@ -368,8 +372,13 @@ impl Graph {
                     //    }
                     //}
                     let n = self.nodes[node].qued;
-                    #[cfg(test)]
-                    println!("{}::{n} <- {}::{node}", self.name_of(n), self.name_of(node));
+                    //if self.collect_stack_trace {
+                    //    self.stack_trace.push(format!(
+                    //        "{}::{n} <- {}::{node}",
+                    //        self.name_of(n),
+                    //        self.name_of(node)
+                    //    ));
+                    //}
                     node = n;
                 }
                 Poll::Pending => {
@@ -381,12 +390,12 @@ impl Graph {
                         panic!("WTF! Recently polled node was marked as 'not being polled'");
                     }
                     if awaiting != 0 {
-                        #[cfg(test)]
-                        println!(
-                            "{}::{node} -> {}::{awaiting}",
-                            self.name_of(node),
-                            self.name_of(awaiting)
-                        );
+                        //#[cfg(test)]
+                        //println!(
+                        //    "{}::{node} -> {}::{awaiting}",
+                        //    self.name_of(node),
+                        //    self.name_of(awaiting)
+                        //);
                         node = awaiting
                     } else {
                         panic!("Pending nothing?");
@@ -403,8 +412,9 @@ impl Graph {
         let pool = Pool::new(unsafe { &mut *(self as *mut Self) });
         //self.compute(0, pool.handle());
         pool.assign(0);
+
         //pool.assign(-2);
-        //std::thread::sleep(Duration::from_secs(1));
+        //std::thread::sleep(Duration::from_millis(10));
         pool.kill();
     }
 
@@ -464,6 +474,8 @@ mod test {
     extern crate test;
     //#![feature(future_join)]
     //use std::future::join;
+
+    use std::thread;
 
     use test::black_box;
     use test::Bencher;
@@ -536,6 +548,16 @@ mod test {
         graph.handle().spawn(Y);
         //graph.print();
         graph.realize();
+    }
+
+    #[bench]
+    fn f_of_x_bench(b: &mut Bencher) {
+        b.iter(|| {
+            let mut graph = Graph::new();
+            graph.handle().spawn(Y);
+            //graph.print();
+            graph.realize();
+        });
     }
 
     /*
