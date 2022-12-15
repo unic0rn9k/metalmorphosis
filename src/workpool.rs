@@ -123,13 +123,6 @@ unsafe impl Sync for Pool {}
 // Pool har ikke brug for mutable access til self efter den er blevet initialized.
 // Atomic operations er ikke mut. Thread operations er heller ikke mut.
 // Bare wrap dit lort i Arc, og så skulle den være gucci?
-
-// # Next up
-// - [ ] Mby do some box magic in Graph::output, so that MutPtr is not needed.
-// - [ ] Wrap stuff in result
-// - [ ] Unit test/ bench multithreading
-// - [ ] Node.qued is not atomic
-// - [ ] Wrap worker i mutex, i stedet for atomics?
 impl Pool {
     pub fn new(graph: &mut Graph) -> Arc<Self> {
         let tmp = Arc::new(Self {
@@ -146,7 +139,7 @@ impl Pool {
     unsafe fn init(self: &Arc<Self>) {
         // TODO: MPI distribute distribute!
         let threads = std::thread::available_parallelism().unwrap().into();
-        let mut_self = unsafe { &mut *(Arc::as_ptr(&self) as *mut Self) };
+        let mut_self = &mut *(Arc::as_ptr(&self) as *mut Self);
         let initialized_threads = Arc::new(AtomicU16::new(0));
 
         for thread_id in 0..threads {
@@ -191,7 +184,7 @@ impl Pool {
     }
 
     pub fn kill(self: Arc<Self>) {
-        // TODO: Check that reference count of self is equal to the number of threads
+        //       Also how do we know that pools on other mpi instances arent running?
         use std::panic;
 
         while self
@@ -229,6 +222,9 @@ impl Pool {
     //    PoolHandle::from(self)
     //}
 
+    // This should take an array of tasks,
+    // so the occupancy list only gets locked once,
+    // and then tasks are submitted until it runs out of workers or tasks.
     pub fn assign(self: &Arc<Self>, task: isize) {
         // Can bruge compare_store til at tjekke om worker er busy, eller om tasken alerede bliver polled.
         //           ^^ (compare_exchange_strong)

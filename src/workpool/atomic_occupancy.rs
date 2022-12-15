@@ -2,6 +2,8 @@ use std::sync::atomic::{AtomicIsize, Ordering};
 
 use super::DeviceID;
 
+// Since Worker contains `home`, this struct could just contain an index to a worker.
+// btw: Is pool.worker_handles supposed to contain workers from other mpi instances?
 pub struct DeviceOccupancyNode {
     last_thread: AtomicIsize,
     last_mpi: AtomicIsize,

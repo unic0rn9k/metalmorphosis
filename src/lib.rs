@@ -33,6 +33,7 @@
 //!     - if I'm in a crunch for time, mby just make a synthetic benchmark... `thread::sleep(Duration::from_millis(10))`
 //!
 //! ## Extra
+//! - Mby do some box magic in Graph::output, so that MutPtr is not needed.
 //! - Allocator reusablility for dynamic graphs
 //! - Const graphs (lib.rs/phf)
 //! - Time-complexity hints
@@ -161,6 +162,7 @@ pub struct Node {
     readers: usize,
     rc: AtomicIsize,
     qued: usize, // TODO: Make these atomic
+    // qued: Reciever<usize> // for recieving children that are awaiting this node
     fork: isize,
     this_node: usize,
     output: Buffer,
@@ -259,6 +261,7 @@ impl<'a, T: Task> GraphHandle<'a, T> {
         self.graph.nodes.push(Node::new(self.calling));
         self.graph.nodes[self.calling].name = U::name();
         let ret = task.init(unsafe { transmute::<&mut Self, _>(self) });
+        // TODO: did the child call spawn? if not, add it to a list of nodes to poll initialiy
         self.calling = id;
         ret
     }
@@ -406,15 +409,61 @@ impl Graph {
     }
 
     pub fn realize(&mut self) {
+        // Graph realization does a topological sort,
+        // where the 'Graph' is just an in-degree array.
+        // Rc is the count of outgoing edges tho...
+        //
+        // Forks are stupid. If we keep track of incomming edges,
+        // we can do topological sort.
+        // This way we can always run all nodes that have no unresolved incomming edges in parralel.
+        //
+        // Nodes might be able to do computation before all incomming edges have been satisfied.
+        // Nodes will only pend if they are awaiting other nodes,
+        // so this can be solved by just polling all nodes iteratively, once when graph is realized.
+        //
+        // Realize computation flow:
+        // - Poll all nodes, while collecting que of nodes that have 0 unresolved incomming edges.
+        // - Poll all nodes in que on workpool.
+        // - Collect all unresloved nodes that have 0 incomming edges into que.
+        // - if que is empty:
+        //      - if there are unresolved nodes: Graph contained cycle
+        //      - else program is done
+        // - Try to poll from que again
+        //      - any time we get to this point, it means we missed an opertunity to poll a child.
+        //        this is bad for performance. Log it!
+        // Worker computation flow:
+        // - Poll node.
+        // - imediatly poll children that where awaiting this node.
+        // - if there are multiple children:
+        //      - this is where i was going to do 'forks'
+        //
+        // # Possible solution to forks
+        // Each node has a que of pending children.
+        // pool has a global que of nodes that could not find workers.
+        // pool has a count of unoccupied workers.
+        // When node has been resolved: Loop over pending children:
+        // - If there are workers left: assign child to worker.
+        // - else push the child to the global pool que.
+        //
+        // If a node has an incorrect incomming edge,
+        // either it, or the parent, should be added to executor que.
+        //
+        // Nodes should still poll parents, if it awaits it, and its not already being polled.
+        // Once a child awaits a parent, the worker will always be unoccupied afterwards anyway.
+        //
+        // Just to be sure. Print if there are still unfinished nodes left before killing.
         for n in &mut self.nodes {
             n.respawn()
         }
         let pool = Pool::new(unsafe { &mut *(self as *mut Self) });
-        //self.compute(0, pool.handle());
-        pool.assign(0);
 
-        //pool.assign(-2);
-        //std::thread::sleep(Duration::from_millis(10));
+        pool.assign(0);
+        // TODO: Keep polling until 0 is done (on any mpi instance).
+        //       maybe we handle networking here, until 0 is done?
+        // pool.network();
+
+        // Check that other mpi instances are done before killing
+        // This might mean that one of the mpi instances needs to know when to kill, and signal apropriately
         pool.kill();
     }
 
@@ -472,15 +521,19 @@ macro_rules! task {
 #[cfg(test)]
 mod test {
     extern crate test;
-    //#![feature(future_join)]
-    //use std::future::join;
-
-    use std::thread;
-
+    use crate::*;
     use test::black_box;
     use test::Bencher;
 
-    use crate::*;
+    // # This does not need to be multithreaded...
+    // metalmorphosis::test::Y::0 -> metalmorphosis::test::F::2
+    // metalmorphosis::test::F::2 -> metalmorphosis::test::X::1
+    // metalmorphosis::test::F::2 <- metalmorphosis::test::X::1
+    // metalmorphosis::test::X::1 <- metalmorphosis::test::F::2
+    //
+    // TODO: VVV
+    // Dont distribute if:
+    // qued node of node that forked (a), is awaiting a
     struct X;
     impl Task for X {
         type InitOutput = Symbol<f32>;
@@ -502,15 +555,6 @@ mod test {
         }
     }
 
-    // # This does not need to be multithreaded...
-    // metalmorphosis::test::Y::0 -> metalmorphosis::test::F::2
-    // metalmorphosis::test::F::2 -> metalmorphosis::test::X::1
-    // metalmorphosis::test::F::2 <- metalmorphosis::test::X::1
-    // metalmorphosis::test::X::1 <- metalmorphosis::test::F::2
-    //
-    // TODO: VVV
-    // Dont distribute if:
-    // qued node of node that forked (a), is awaiting a
     struct Y;
     impl Task for Y {
         type InitOutput = ();
