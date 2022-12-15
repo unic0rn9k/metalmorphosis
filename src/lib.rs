@@ -33,11 +33,12 @@
 //!     - if I'm in a crunch for time, mby just make a synthetic benchmark... `thread::sleep(Duration::from_millis(10))`
 //!
 //! ## Extra
+//! - Anchored nodes (so that 0 isnt special. Then executor makes sure anchored nodes are done before kill)
 //! - Mby do some box magic in Graph::output, so that MutPtr is not needed.
 //! - Allocator reusablility for dynamic graphs
 //! - Const graphs (lib.rs/phf)
 //! - Time-complexity hints
-//! - Static types for futures
+//! - Static types for futures (allocate them on bump, and let node provide funktion pointer for polling)
 //! - Graph serialization (need runtime typechecking for graph hot-realoading)
 //! - Optional stack trace (basically already implemented this)
 //! - Check for cycles when building graph
@@ -96,6 +97,8 @@ use std::time::Duration;
 #[derive(Clone, Copy)]
 pub struct Symbol<T>(*mut Node, PhantomData<T>);
 unsafe impl<T> Send for Symbol<T> {}
+
+// TODO: Take ref to graph and index to parent, so we can send an await signal to parent.
 #[derive(Clone, Copy)]
 pub struct OwnedSymbol<T>(*mut Node, *mut Node, PhantomData<T>);
 unsafe impl<T> Send for OwnedSymbol<T> {}
@@ -110,7 +113,15 @@ impl<T: 'static> Future for OwnedSymbol<T> {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
         unsafe {
-            if (*self.0).done {
+            // TODO:
+            // if let Some(ret) = self.graph.value_of(self.target){
+            //      return Poll::Ready(ret)
+            // }else{
+            //      self.graph.nodes[self.target].awaited_by(self.this_node);
+            //      self.graph.compute(self.target); // Er den pending tho?
+            //      return Poll::Pending;
+            // }
+            if (*self.0).done.load(Ordering::Acquire) {
                 let rc = (*self.0).rc.fetch_sub(1, Ordering::Relaxed);
                 if rc >= 0 {
                     return Poll::Ready(transmute((*self.0).output.data));
@@ -131,44 +142,27 @@ impl<T: 'static> Future for OwnedSymbol<T> {
                     );
                 }
             } else {
-                //let poll_here = !(*self.0).is_being_polled.swap(true, SeqCst);
-                //if poll_here {
-                //    if Pin::new(&mut (*self.0).future).poll(cx).is_ready() {
-                //        (*self.0).done = true;
-                //        return Poll::Ready(transmute((*self.0).output.data));
-                //    }
-                //    (*self.0).is_being_polled.swap(false, SeqCst);
-                //}
+                // TODO: self.graph.compute(self.target)
                 (*self.1).qued = (*self.0).this_node;
                 (*self.0).qued = (*self.1).this_node;
-                // TODO: A node should be forked (moved to another device)
-                //       if the `que` already contains another node.
             }
             Poll::Pending
         }
     }
 }
 
-// future could have a known type at compile time,
-// if it is allocated on the graphs bump allocator,
-// and Node provides a funtion pointer for polling and initializing it.
 pub struct Node {
     name: &'static str,
     task: Box<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>,
     future: Pin<Box<dyn Future<Output = ()> + Send>>,
-    // VVV BASH ME GENIUS VVV
-    // we just need to know how many readers it has,
-    // and which node last awaited it (AtomicUsize).
     readers: usize,
-    rc: AtomicIsize,
-    qued: usize, // TODO: Make these atomic
+    rc: AtomicIsize, // rc is uneccesary if iterations is not implemented
+    qued: usize,     // TODO: Make these atomic
     // qued: Reciever<usize> // for recieving children that are awaiting this node
-    fork: isize,
     this_node: usize,
     output: Buffer,
-    done: bool,
-    mpi_rank: usize,
-    is_being_polled: AtomicBool,
+    done: AtomicBool,            // atomic?
+    is_being_polled: AtomicBool, // not atomic?
 }
 
 impl Node {
@@ -180,11 +174,9 @@ impl Node {
             readers: 0,
             rc: AtomicIsize::from(0),
             qued: 0,
-            fork: -1,
             this_node,
             output: Buffer::new(),
-            done: false,
-            mpi_rank: 0,
+            done: AtomicBool::new(false),
             is_being_polled: AtomicBool::new(false),
         }
     }
@@ -340,16 +332,15 @@ impl Graph {
         }
     }
 
+    // TODO: Dont take pool as arg, move it into self.
     pub fn compute(&mut self, mut node: usize, pool: Arc<Pool>) {
-        // TODO:
-        // - [ ] Executor needs to check for forks, and push them to thread pool.
-        // - [X] Check if node is being polled elsewhere.
-
         let waker = Arc::new(NilWaker).into();
         let mut cx = Context::from_waker(&waker);
 
+        // We should return at some point with a Poll<()>
+
         loop {
-            if self.nodes[node].done {
+            if self.nodes[node].done.load(Ordering::Acquire) {
                 panic!("Cycle!")
             }
 
@@ -366,25 +357,18 @@ impl Graph {
                     if node == 0 {
                         break;
                     }
-                    self.nodes[node].done = true;
+                    self.nodes[node].done.store(true, Ordering::Release);
 
-                    // this solution is problemtic in cases where `n` pending because its awaiting another node
-                    //for n in &self.nodes[node].readers {
-                    //    if !self.nodes[*n].done {
-                    //        node = *n;
-                    //    }
-                    //}
+                    // TODO: poll all awaiting children
+                    // node = first child.
+                    // self.pool.assign(remaining children)
+                    // brug try_iter for at undgå blocking, hvis der ikke er nogen children.
                     let n = self.nodes[node].qued;
-                    //if self.collect_stack_trace {
-                    //    self.stack_trace.push(format!(
-                    //        "{}::{n} <- {}::{node}",
-                    //        self.name_of(n),
-                    //        self.name_of(node)
-                    //    ));
-                    //}
+
                     node = n;
                 }
                 Poll::Pending => {
+                    // just exit?
                     let awaiting = self.nodes[node].qued;
                     if !self.nodes[node]
                         .is_being_polled
@@ -393,12 +377,6 @@ impl Graph {
                         panic!("WTF! Recently polled node was marked as 'not being polled'");
                     }
                     if awaiting != 0 {
-                        //#[cfg(test)]
-                        //println!(
-                        //    "{}::{node} -> {}::{awaiting}",
-                        //    self.name_of(node),
-                        //    self.name_of(awaiting)
-                        //);
                         node = awaiting
                     } else {
                         panic!("Pending nothing?");
@@ -521,6 +499,8 @@ macro_rules! task {
 #[cfg(test)]
 mod test {
     extern crate test;
+    use std::sync::mpsc::channel;
+
     use crate::*;
     use test::black_box;
     use test::Bencher;
@@ -590,7 +570,6 @@ mod test {
     fn f_of_x() {
         let mut graph = Graph::new();
         graph.handle().spawn(Y);
-        //graph.print();
         graph.realize();
     }
 
@@ -599,7 +578,6 @@ mod test {
         b.iter(|| {
             let mut graph = Graph::new();
             graph.handle().spawn(Y);
-            //graph.print();
             graph.realize();
         });
     }
@@ -663,6 +641,15 @@ mod test {
         }
     }
     */
+
+    #[bench]
+    fn send_recv(b: &mut Bencher) {
+        b.iter(|| {
+            let (send, recv) = channel();
+            send.send(black_box(2usize)).unwrap();
+            black_box(recv.recv().unwrap());
+        });
+    }
 
     #[bench]
     fn spawn_async(b: &mut Bencher) {

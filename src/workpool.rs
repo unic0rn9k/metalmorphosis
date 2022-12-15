@@ -9,30 +9,6 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-//struct AtomicIsize(isize);
-//impl AtomicIsize {
-//    fn load(&self, _: Ordering) -> isize {
-//        let mut a = black_box(self.0);
-//        while a != self.0 {
-//            a = black_box(self.0)
-//        }
-//        a
-//    }
-//    fn store(&mut self, val: isize, _: Ordering) {
-//        while self.0 != val {
-//            self.0 = black_box(val);
-//        }
-//    }
-//    fn swap(&mut self, val: isize, o: Ordering) -> isize {
-//        let a = self.load(o);
-//        self.store(val, o);
-//        a
-//    }
-//    fn new(val: isize) -> Self {
-//        Self(val)
-//    }
-//}
-
 use crate::{error::Result, Graph};
 
 mod atomic_occupancy;
@@ -137,7 +113,6 @@ impl Pool {
     }
 
     unsafe fn init(self: &Arc<Self>) {
-        // TODO: MPI distribute distribute!
         let threads = std::thread::available_parallelism().unwrap().into();
         let mut_self = &mut *(Arc::as_ptr(&self) as *mut Self);
         let initialized_threads = Arc::new(AtomicU16::new(0));
