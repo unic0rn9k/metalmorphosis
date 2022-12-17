@@ -1,42 +1,62 @@
-use super::DeviceID;
-use std::sync::{atomic::Ordering, Mutex};
+use super::{DeviceID, Pool};
+use std::{
+    cell::UnsafeCell,
+    sync::{Arc, Mutex, MutexGuard},
+};
 
-pub struct DeviceOccupancyNode(Mutex<Option<DeviceID>>);
+pub struct OccupancyNode(UnsafeCell<Option<DeviceID>>);
+unsafe impl Sync for OccupancyNode {}
+pub struct LockedOccupancyNode<'a>(MutexGuard<'a, OccupancyNode>);
 
-impl DeviceOccupancyNode {
+impl<'a> From<&'a Mutex<OccupancyNode>> for LockedOccupancyNode<'a> {
+    fn from(src: &'a Mutex<OccupancyNode>) -> Self {
+        Self(src.lock().unwrap())
+    }
+}
+
+pub fn lock(src: &Mutex<OccupancyNode>) -> LockedOccupancyNode {
+    src.into()
+}
+
+impl<'a> LockedOccupancyNode<'a> {
+    pub fn pop(&mut self, pool: &Arc<Pool>) -> Option<DeviceID> {
+        if let Some(this) = self.0.device().map(|s| s) {
+            // This does not need to lock the mutex, since it will always be unlocked.
+            let ret = this.clone();
+            *self.device() = pool.worker_handles[this.thread_id].prev_unoccupied.clone();
+            Some(ret)
+        } else {
+            None
+        }
+    }
+
+    pub fn insert(&mut self, other: DeviceID, pool: &Arc<Pool>) {
+        unsafe {
+            (*pool.worker_handles[other.thread_id].prev_unoccupied.0.get()) =
+                self.device().device();
+        }
+        *self.device() = OccupancyNode::from(&other);
+    }
+
+    pub fn device(&mut self) -> &mut OccupancyNode {
+        &mut self.0
+    }
+}
+
+impl OccupancyNode {
     pub fn device(&self) -> Option<DeviceID> {
-        self.0.lock()
-    }
-
-    // TODO: Fix me
-    pub fn swap(&self, other: &Self) {
-        let ord = Ordering::SeqCst;
-        let mut mpi = self.last_mpi.load(ord);
-        let mut thread = self.last_thread.load(ord);
-        mpi = other.last_mpi.swap(mpi, ord);
-        thread = other.last_thread.swap(thread, ord);
-        self.last_mpi.store(mpi, ord);
-        self.last_thread.store(thread, ord);
-    }
-
-    pub fn thread_local_swap(&self, other: &Self) {
-        let ord = Ordering::SeqCst;
-        let mut thread = self.last_thread.load(ord);
-        thread = other.last_thread.swap(thread, ord);
-        self.last_thread.store(thread, ord);
+        unsafe { (*self.0.get()).clone() }
     }
 
     pub fn new() -> Self {
-        DeviceOccupancyNode {
-            last_thread: AtomicIsize::new(-1),
-            last_mpi: AtomicIsize::new(-1),
-        }
+        OccupancyNode(UnsafeCell::new(None))
     }
 
     pub fn from(id: &DeviceID) -> Self {
-        DeviceOccupancyNode {
-            last_thread: AtomicIsize::new(id.thread_id as isize),
-            last_mpi: AtomicIsize::new(id.mpi_id as isize),
-        }
+        OccupancyNode(UnsafeCell::new(Some(id.clone())))
+    }
+
+    pub fn clone(&self) -> Self {
+        Self(UnsafeCell::new(self.device()))
     }
 }

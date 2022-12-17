@@ -7,10 +7,10 @@ pub enum Error {
     //    #[error("Error sending data to local executor `{0}`")]
     //    SendError(SendError<Signal<'a>>),
     #[error(transparent)]
-    BincodeError(#[from] bincode::Error),
+    Bincode(#[from] bincode::Error),
 
     #[error(transparent)]
-    ReceiveError(#[from] TryRecvError),
+    Receive(#[from] TryRecvError),
 
     #[error(transparent)]
     StdIO(#[from] std::io::Error),

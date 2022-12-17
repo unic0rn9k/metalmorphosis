@@ -92,14 +92,16 @@ use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool, AtomicIsize};
 use std::sync::Arc;
 use std::task::{Context, Poll, Wake};
+use std::thread;
 use std::time::Duration;
 
 #[derive(Clone, Copy)]
 pub struct Symbol<T>(*mut Node, PhantomData<T>);
 unsafe impl<T> Send for Symbol<T> {}
 
-// TODO: Take ref to graph and index to parent, so we can send an await signal to parent.
+// TODO: Contain Sender and ref to graph (to call compute)
 #[derive(Clone, Copy)]
+#[must_use = "You always need to await a OwnedSymbol"]
 pub struct OwnedSymbol<T>(*mut Node, *mut Node, PhantomData<T>);
 unsafe impl<T> Send for OwnedSymbol<T> {}
 
@@ -107,7 +109,6 @@ impl<T: 'static> Future for OwnedSymbol<T> {
     type Output = &'static T;
 
     // It doesn't seem that this must_use does anythin :/
-    #[must_use]
     fn poll(
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
@@ -188,6 +189,16 @@ impl Node {
         self.rc = AtomicIsize::new(self.readers as isize);
         self.future = (self.task)();
     }
+
+    // This would be less cursed if Node was wrapped in an UnsafeCell
+    fn future(&self) -> Pin<&mut Pin<Box<dyn Future<Output = ()> + Send>>> {
+        unsafe {
+            Pin::new(
+                &mut *(&self.future as *const Pin<Box<dyn Future<Output = ()> + Send>>
+                    as *mut Pin<Box<dyn Future<Output = ()> + Send>>),
+            )
+        }
+    }
 }
 
 pub struct Buffer {
@@ -227,6 +238,7 @@ struct GraphSpawner<T, O>{
 graph.sub_graph(source: Task<Output=T>) -> smth idk
 */
 
+// TODO: Enterior mutability for graph, and wrap in Arc, like in workpool.
 pub struct Graph {
     // If this allocator is made reusable between graphs,
     // it would be safe to create a new graph inside an async block
@@ -236,6 +248,7 @@ pub struct Graph {
     _marker: PhantomPinned,
     stack_trace: Vec<String>,
     collect_stack_trace: bool,
+    pool: Arc<Pool>,
     // sub_graphs: Vec<GraphSpawner>
 }
 unsafe impl Sync for Graph {}
@@ -282,6 +295,7 @@ impl<'a, T: Task> GraphHandle<'a, T> {
         ptr
     }
 
+    /// # Safety
     /// Make sure `o` lives for long enough... Cause I won't
     pub unsafe fn use_output(&mut self, o: &mut T::Output)
     where
@@ -308,32 +322,40 @@ impl<'a, T: Task> GraphHandle<'a, T> {
     {
         unsafe {
             let _self = &mut *(self as *mut Self);
+            // This may yield UB, depending on T
             self.use_output(_self.alloc(std::mem::MaybeUninit::<T::Output>::uninit().assume_init()))
         }
     }
 }
 
 impl Graph {
-    pub fn handle<'a>(&'a mut self) -> GraphHandle<'a, ()> {
+    // This would also be less cursed if self was wrapped in an UnsafeCell
+    pub fn handle<'a>(self: &'a Arc<Self>) -> GraphHandle<'a, ()> {
+        assert_eq!(
+            Arc::strong_count(&self),
+            1,
+            "Cannot get handle to Graph if there exists other references to it"
+        );
         GraphHandle {
-            graph: self,
+            graph: unsafe { transmute(Arc::as_ptr(self)) },
             calling: 0,
             marker: PhantomData,
         }
     }
 
-    pub fn new() -> Self {
-        Graph {
+    pub fn new() -> Arc<Self> {
+        Arc::new_cyclic(|graph| Graph {
             bump: bumpalo::Bump::new(),
             nodes: vec![],
             _marker: PhantomPinned,
             stack_trace: vec![],
             collect_stack_trace: false,
-        }
+            pool: Pool::new(graph.clone()),
+        })
     }
 
     // TODO: Dont take pool as arg, move it into self.
-    pub fn compute(&mut self, mut node: usize, pool: Arc<Pool>) {
+    pub fn compute(self: &Arc<Self>, mut node: usize) {
         let waker = Arc::new(NilWaker).into();
         let mut cx = Context::from_waker(&waker);
 
@@ -341,28 +363,38 @@ impl Graph {
 
         loop {
             if self.nodes[node].done.load(Ordering::Acquire) {
-                panic!("Cycle!")
+                break;
+                // Poll children ig?
             }
 
+            // TODO: Move this check into WorkPool::assign
             if self.nodes[node]
                 .is_being_polled
-                .swap(true, Ordering::SeqCst)
+                .swap(true, Ordering::Acquire)
             {
-                // TODO: Don't just spin, do something!
-                panic!("You spin me right right round");
+                return;
+                continue;
             }
 
-            match Pin::new(&mut self.nodes[node].future).poll(&mut cx) {
+            match &self.nodes[node].future().poll(&mut cx) {
                 Poll::Ready(()) => {
                     if node == 0 {
                         break;
                     }
                     self.nodes[node].done.store(true, Ordering::Release);
 
+                    //if !
+                    self.nodes[node]
+                        .is_being_polled
+                        .store(false, Ordering::Release);
+                    //{
+                    //    panic!("WTF! Recently polled node was marked as 'not being polled'");
+                    //}
                     // TODO: poll all awaiting children
                     // node = first child.
                     // self.pool.assign(remaining children)
                     // brug try_iter for at undgå blocking, hvis der ikke er nogen children.
+                    //return;
                     let n = self.nodes[node].qued;
 
                     node = n;
@@ -370,12 +402,15 @@ impl Graph {
                 Poll::Pending => {
                     // just exit?
                     let awaiting = self.nodes[node].qued;
-                    if !self.nodes[node]
+                    self.nodes[node]
                         .is_being_polled
-                        .swap(false, Ordering::SeqCst)
-                    {
-                        panic!("WTF! Recently polled node was marked as 'not being polled'");
-                    }
+                        .store(false, Ordering::Release);
+                    //if !self.nodes[node]
+                    //    .is_being_polled
+                    //    .swap(false, Ordering::Release)
+                    //{
+                    //    panic!("WTF! Recently polled node was marked as 'not being polled'");
+                    //}
                     if awaiting != 0 {
                         node = awaiting
                     } else {
@@ -386,7 +421,7 @@ impl Graph {
         }
     }
 
-    pub fn realize(&mut self) {
+    pub fn realize(self: Arc<Self>) {
         // Graph realization does a topological sort,
         // where the 'Graph' is just an in-degree array.
         // Rc is the count of outgoing edges tho...
@@ -430,19 +465,47 @@ impl Graph {
         // Once a child awaits a parent, the worker will always be unoccupied afterwards anyway.
         //
         // Just to be sure. Print if there are still unfinished nodes left before killing.
-        for n in &mut self.nodes {
+        //
+        // It might be easyest/ a good solution, to find a distribution of tasks when initializing the graf,
+        // and then improving the distribution at runtime. This could be achived with 'execution masks'.
+        // Then if we make the graf queriable, and so that user can mutate the distribution mask manually,
+        // and reads from mpi's timer
+        // metalmorphosis suddenly provides primitives!
+        assert_eq!(
+            Arc::strong_count(&self),
+            1,
+            "Cannot realize Graph if there exists other references to it"
+        );
+        // Again. Less cursed with UnsafeCell
+        for n in unsafe { &mut *(&self.nodes as *const Vec<Node> as *mut Vec<Node>) } {
             n.respawn()
         }
-        let pool = Pool::new(unsafe { &mut *(self as *mut Self) });
+        //let pool = Pool::new(unsafe { &mut *(self as *mut Self) });
+        unsafe { self.pool.init() }
 
-        pool.assign(0);
+        // It still thinks the node is being polled. What happens if the node needs to be polled multiple times?
+        //pool.assign(0);
+        //pool.assign(0);
+        //pool.assign(0);
+        //pool.assign(0);
+        //pool.assign(0);
+        //pool.assign(0);
+        //thread::sleep(Duration::from_millis(100));
+        //pool.assign(0);
+        //pool.assign(0);
+        //pool.assign(0);
+        //pool.assign(0);
+        //pool.assign(2);
+        //pool.assign(1);
+        //thread::sleep(Duration::from_millis(100));
+        self.pool.assign([0]);
         // TODO: Keep polling until 0 is done (on any mpi instance).
         //       maybe we handle networking here, until 0 is done?
         // pool.network();
 
         // Check that other mpi instances are done before killing
         // This might mean that one of the mpi instances needs to know when to kill, and signal apropriately
-        pool.kill();
+        self.pool.kill();
     }
 
     fn name_of(&self, n: usize) -> &'static str {
