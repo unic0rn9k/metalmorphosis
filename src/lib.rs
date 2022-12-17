@@ -246,8 +246,6 @@ pub struct Graph {
     bump: bumpalo::Bump,
     nodes: Vec<Node>,
     _marker: PhantomPinned,
-    stack_trace: Vec<String>,
-    collect_stack_trace: bool,
     pool: Arc<Pool>,
     // sub_graphs: Vec<GraphSpawner>
 }
@@ -348,8 +346,6 @@ impl Graph {
             bump: bumpalo::Bump::new(),
             nodes: vec![],
             _marker: PhantomPinned,
-            stack_trace: vec![],
-            collect_stack_trace: false,
             pool: Pool::new(graph.clone()),
         })
     }
