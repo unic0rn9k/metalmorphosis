@@ -47,7 +47,7 @@ impl Worker {
 // Oh god. What is this?
 pub struct MutPtr<T>(*mut T);
 unsafe impl<T> Send for MutPtr<T> {}
-unsafe impl<T> Sync for MutPtr<T> {}
+//unsafe impl<T> Sync for MutPtr<T> {}
 impl<T> MutPtr<T> {
     pub fn from<U>(s: &mut U) -> Self {
         Self(s as *mut U as *mut T)
@@ -95,8 +95,6 @@ pub struct Pool {
     thread_handles: Vec<JoinHandle<()>>,
     worker_handles: Vec<Arc<Worker>>,
 }
-unsafe impl Send for Pool {}
-unsafe impl Sync for Pool {}
 
 // Pool har ikke brug for mutable access til self efter den er blevet initialized.
 // Atomic operations er ikke mut. Thread operations er heller ikke mut.
@@ -113,6 +111,7 @@ impl Pool {
     }
 
     pub unsafe fn init(self: &Arc<Self>) {
+        println!("pool with graph {:?}", Weak::as_ptr(&self.graph));
         let threads = std::thread::available_parallelism().unwrap().into();
         let mut_self = &mut *(Arc::as_ptr(self) as *mut Self);
 
@@ -133,7 +132,7 @@ impl Pool {
             mut_self.thread_handles.push(thread::spawn(move || loop {
                 //println!("Worker {} says Hi", worker.home.thread_id);
 
-                fence(Ordering::SeqCst);
+                //fence(Ordering::SeqCst);
                 lock(&pool.last_unoccupied).insert(worker.home.clone(), &pool);
                 tc.fetch_add(1, Ordering::Relaxed);
 
@@ -180,21 +179,21 @@ impl Pool {
             self.thread_handles[n].thread().unpark();
         }
 
-        let mut_self = unsafe { &mut *(Arc::as_ptr(&self) as *mut Self) };
+        for t in &self.thread_handles {
+            while !t.is_finished() {}
+        }
+
+        let mut_self = unsafe { &mut *(Arc::as_ptr(self) as *mut Self) };
         while !self.thread_handles.is_empty() {
             if let Err(e) = mut_self.thread_handles.pop().unwrap().join() {
                 panic::resume_unwind(e);
             }
         }
         assert_eq!(
-            Arc::strong_count(&self),
+            Arc::strong_count(self),
             1,
             "WorkPool killed, but there still exists references to it!"
         )
-    }
-
-    pub fn is_this_device(&self, device: DeviceID) -> bool {
-        self.mpi_id == device.mpi_id
     }
 
     // TODO: This should take an IntoIter of tasks,
@@ -202,8 +201,10 @@ impl Pool {
         // TODO: Brug compare exchange til at tjekke om tasken allerede bliver polled, i stedet for at tjekke i compute.
         let mut occupancy = lock(&self.last_unoccupied);
         for task in task {
+            println!("Assigning task");
             let device = occupancy.pop(self);
             if let Some(device) = device {
+                println!("Found device for task:{task}");
                 if device.mpi_id != self.mpi_id {
                     todo!("Another MPI instance")
                 }

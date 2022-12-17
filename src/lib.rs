@@ -84,122 +84,128 @@ use serde::{Deserialize, Serialize};
 use workpool::{MutPtr, Pool};
 
 use std::any::type_name;
+use std::cell::UnsafeCell;
 use std::future::Future;
 use std::marker::{PhantomData, PhantomPinned};
 use std::mem::transmute;
 use std::pin::Pin;
 use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool, AtomicIsize};
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use std::task::{Context, Poll, Wake};
 use std::thread;
 use std::time::Duration;
 
+// TODO: Symbol should contain a usize, and graph should convert to references when it realizes
 #[derive(Clone, Copy)]
-pub struct Symbol<T>(*mut Node, PhantomData<T>);
+pub struct Symbol<T>(usize, PhantomData<T>);
 unsafe impl<T> Send for Symbol<T> {}
 
 // TODO: Contain Sender and ref to graph (to call compute)
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 #[must_use = "You always need to await a OwnedSymbol"]
-pub struct OwnedSymbol<T>(*mut Node, *mut Node, PhantomData<T>);
+pub struct OwnedSymbol<T> {
+    returner: Arc<Node>,
+    reader: Arc<Node>,
+    que: Sender<usize>,
+    marker: PhantomData<T>,
+}
 unsafe impl<T> Send for OwnedSymbol<T> {}
 
 impl<T: 'static> Future for OwnedSymbol<T> {
     type Output = &'static T;
 
-    // It doesn't seem that this must_use does anythin :/
     fn poll(
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
-        unsafe {
-            // TODO:
-            // if let Some(ret) = self.graph.value_of(self.target){
-            //      return Poll::Ready(ret)
-            // }else{
-            //      self.graph.nodes[self.target].awaited_by(self.this_node);
-            //      self.graph.compute(self.target); // Er den pending tho?
-            //      return Poll::Pending;
-            // }
-            if (*self.0).done.load(Ordering::Acquire) {
-                let rc = (*self.0).rc.fetch_sub(1, Ordering::Relaxed);
-                if rc >= 0 {
-                    return Poll::Ready(transmute((*self.0).output.data));
-                }
-                if rc == -1 {
-                    todo!("Reinitializing tasks is not implemented yet");
-                    // we can re-init and poll it directly!
-                    // remember to set rc.
-                }
-                if rc < -1 {
-                    // someone else is starting to poll it. Hopefully...
-                    // it should be very unlikely to end up here,
-                    // as rc should be set as soon as a node is re-inited.
-                    panic!(
-                        "rc < -1; when {} awaiting {}",
-                        (*self.1).this_node,
-                        (*self.0).this_node
-                    );
-                }
-            } else {
-                // TODO: self.graph.compute(self.target)
-                (*self.1).qued = (*self.0).this_node;
-                (*self.0).qued = (*self.1).this_node;
+        // TODO:
+        // if let Some(ret) = self.graph.value_of(self.target){
+        //      return Poll::Ready(ret)
+        // }else{
+        //      self.graph.nodes[self.target].awaited_by(self.this_node);
+        //      self.graph.compute(self.target); // Er den pending tho?
+        //      return Poll::Pending;
+        // }
+        println!(
+            "polling: {:?} for {:?}",
+            Arc::as_ptr(&self.returner),
+            Arc::as_ptr(&self.reader)
+        );
+        if self.returner.done.load(Ordering::Acquire) {
+            // TODO: respawn if strong_count is 1
+            // TODO: return returner output
+            println!("task was done");
+            Poll::Ready(unsafe { transmute(self.returner.output.data) })
+        } else {
+            println!("task was pending {}", self.returner.this_node);
+            if self.reader.qued.load(Ordering::SeqCst) == self.returner.this_node as isize {
+                return Poll::Pending;
             }
+            self.reader
+                .qued
+                .store(self.returner.this_node as isize, Ordering::SeqCst);
+            self.que.send(self.reader.this_node).unwrap();
             Poll::Pending
         }
     }
 }
 
+pub type BoxFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
+pub type AsyncFunction = Box<dyn Fn(&Arc<Node>, &Arc<Graph>) -> BoxFuture>;
+
 pub struct Node {
     name: &'static str,
-    task: Box<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>,
-    future: Pin<Box<dyn Future<Output = ()> + Send>>,
+    task: AsyncFunction,
+    future: UnsafeCell<BoxFuture>, // Wrap this in mutex
     readers: usize,
-    rc: AtomicIsize, // rc is uneccesary if iterations is not implemented
-    qued: usize,     // TODO: Make these atomic
-    // qued: Reciever<usize> // for recieving children that are awaiting this node
+    qued: AtomicIsize,
+    awaited_by: Receiver<usize>, // for recieving children that are awaiting this node
+    awaiter: Sender<usize>,
     this_node: usize,
     output: Buffer,
-    done: AtomicBool,            // atomic?
-    is_being_polled: AtomicBool, // not atomic?
+    done: AtomicBool,
+    is_being_polled: AtomicBool,
 }
 
 impl Node {
-    fn new(this_node: usize) -> Self {
-        Node {
+    fn new(this_node: usize) -> Arc<Self> {
+        let (awaiter, awaited_by) = channel();
+        Arc::new(Node {
             name: "NIL",
-            task: Box::new(|| Box::pin(async {})),
-            future: Box::pin(async {}),
+            task: Box::new(|_, _| Box::pin(async {})),
+            future: UnsafeCell::new(Box::pin(async {})),
             readers: 0,
-            rc: AtomicIsize::from(0),
-            qued: 0,
+            qued: AtomicIsize::new(-1),
+            awaited_by,
+            awaiter,
             this_node,
             output: Buffer::new(),
             done: AtomicBool::new(false),
             is_being_polled: AtomicBool::new(false),
-        }
+        })
     }
 
-    fn respawn(&mut self) {
+    fn respawn(self: &Arc<Self>, graph: &Arc<Graph>) {
         if self.output.data.is_null() {
-            panic!("Looks like you forgot to initialize a buffer")
+            //panic!("Looks like you forgot to initialize a buffer")
         }
-        self.rc = AtomicIsize::new(self.readers as isize);
-        self.future = (self.task)();
+        unsafe { *self.future.get() = (self.task)(self, graph) }
     }
 
-    // This would be less cursed if Node was wrapped in an UnsafeCell
-    fn future(&self) -> Pin<&mut Pin<Box<dyn Future<Output = ()> + Send>>> {
-        unsafe {
-            Pin::new(
-                &mut *(&self.future as *const Pin<Box<dyn Future<Output = ()> + Send>>
-                    as *mut Pin<Box<dyn Future<Output = ()> + Send>>),
-            )
+    fn own_symbol<T>(self: &Arc<Self>, s: Symbol<T>, graph: &Arc<Graph>) -> OwnedSymbol<T> {
+        OwnedSymbol {
+            returner: graph.nodes[s.0].clone(),
+            reader: self.clone(),
+            que: graph.nodes[s.0].awaiter.clone(),
+            marker: PhantomData,
         }
     }
 }
+
+//unsafe impl Send for Node {}
+//unsafe impl Sync for Node {}
 
 pub struct Buffer {
     data: MutPtr<()>,
@@ -238,18 +244,18 @@ struct GraphSpawner<T, O>{
 graph.sub_graph(source: Task<Output=T>) -> smth idk
 */
 
-// TODO: Enterior mutability for graph, and wrap in Arc, like in workpool.
 pub struct Graph {
     // If this allocator is made reusable between graphs,
     // it would be safe to create a new graph inside an async block
     // and return a locked symbol from it. (also would require reusing the mpi universe)
-    bump: bumpalo::Bump,
-    nodes: Vec<Node>,
+    bump: Pin<Arc<bumpalo::Bump>>, // bump is unpin, so this does nothing...
+    nodes: Vec<Arc<Node>>, // TODO: All this ub should fuck off if we wrap node in Arc<UnsafeCell>?
     _marker: PhantomPinned,
     pool: Arc<Pool>,
     // sub_graphs: Vec<GraphSpawner>
 }
 unsafe impl Sync for Graph {}
+unsafe impl Send for Graph {}
 
 pub struct GraphHandle<'a, T: Task + ?Sized> {
     graph: &'a mut Graph,
@@ -262,7 +268,7 @@ impl<'a, T: Task> GraphHandle<'a, T> {
         let id = self.calling;
         self.calling = self.graph.nodes.len();
         self.graph.nodes.push(Node::new(self.calling));
-        self.graph.nodes[self.calling].name = U::name();
+        //self.graph.nodes[self.calling].name = U::name();
         let ret = task.init(unsafe { transmute::<&mut Self, _>(self) });
         // TODO: did the child call spawn? if not, add it to a list of nodes to poll initialiy
         self.calling = id;
@@ -270,27 +276,29 @@ impl<'a, T: Task> GraphHandle<'a, T> {
     }
 
     // attaches edge to self.
-    pub fn own_symbol<U>(&mut self, s: Symbol<U>) -> OwnedSymbol<U> {
-        unsafe {
-            // (*s.0).readers.push(self.calling);
-            (*s.0).readers += 1;
-        }
-        // dont fetch add here. Instead set `node.rc` to `node.readers.len()` when calling `node.task`
-        // s.0.rc.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        OwnedSymbol(s.0, &mut self.graph.nodes[self.calling] as *mut _, s.1)
-    }
+    //pub fn own_symbol<U>(&mut self, s: Symbol<U>) -> OwnedSymbol<U> {
+    //    // dont fetch add here. Instead set `node.rc` to `node.readers.len()` when calling `node.task`
+    //    // s.0.rc.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    //    OwnedSymbol {
+    //        returner: s.0.clone(),
+    //        reader: self.graph.nodes[self.calling].clone(),
+    //        que: s.0.awaiter.clone(),
+    //        marker: s.1,
+    //    }
+    //}
 
     pub fn output(&mut self) -> MutPtr<T::Output>
     where
         <T as Task>::Output: Deserialize<'static> + Serialize,
         // If this size bound is removed, the compiler complains about casting thin pointer to a fat one...
     {
-        let mut ptr: MutPtr<T::Output> = self.graph.nodes[self.calling].output.data.transmute();
-        if ptr.is_null() {
-            self.uninit_buffer();
-            ptr = self.graph.nodes[self.calling].output.data.transmute();
-        }
-        ptr
+        //let mut ptr: MutPtr<T::Output> = self.graph.nodes[self.calling].output.data.transmute();
+        //if ptr.is_null() {
+        //    self.uninit_buffer();
+        //    ptr = self.graph.nodes[self.calling].output.data.transmute();
+        //}
+        //ptr
+        MutPtr::null()
     }
 
     /// # Safety
@@ -299,29 +307,32 @@ impl<'a, T: Task> GraphHandle<'a, T> {
     where
         <T as Task>::Output: Deserialize<'static> + Serialize,
     {
-        self.graph.nodes[self.calling].output = Buffer::from(o);
+        //(&mut *(Arc::as_ptr(&self.graph.nodes[self.calling]) as *mut Node)).output =
+        //    Buffer::from(o);
     }
 
-    pub fn task(&mut self, task: Box<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>) {
-        self.graph.nodes[self.calling].task = task;
+    pub fn task(&mut self, task: AsyncFunction) {
+        unsafe {
+            (&mut *(Arc::as_ptr(&self.graph.nodes[self.calling]) as *mut Node)).task = task;
+        }
     }
 
     pub fn this_node(&mut self) -> Symbol<T::Output> {
-        Symbol(&mut self.graph.nodes[self.calling] as *mut _, PhantomData)
+        Symbol(self.calling, PhantomData)
     }
 
-    pub fn alloc<U>(&mut self, val: U) -> &mut U {
-        self.graph.bump.alloc(val)
-    }
+    //pub fn alloc<U>(&mut self, val: U) -> &mut U {
+    //    self.graph.bump.alloc(val)
+    //}
 
     pub fn uninit_buffer(&mut self)
     where
         <T as Task>::Output: Deserialize<'static> + Serialize,
     {
         unsafe {
-            let _self = &mut *(self as *mut Self);
+            //let _self = &mut *(self as *mut Self);
             // This may yield UB, depending on T
-            self.use_output(_self.alloc(std::mem::MaybeUninit::<T::Output>::uninit().assume_init()))
+            //self.use_output(_self.alloc(std::mem::MaybeUninit::<T::Output>::uninit().assume_init()))
         }
     }
 }
@@ -330,12 +341,12 @@ impl Graph {
     // This would also be less cursed if self was wrapped in an UnsafeCell
     pub fn handle<'a>(self: &'a Arc<Self>) -> GraphHandle<'a, ()> {
         assert_eq!(
-            Arc::strong_count(&self),
+            Arc::strong_count(self),
             1,
             "Cannot get handle to Graph if there exists other references to it"
         );
         GraphHandle {
-            graph: unsafe { transmute(Arc::as_ptr(self)) },
+            graph: unsafe { &mut *(Arc::as_ptr(self) as *mut Self) },
             calling: 0,
             marker: PhantomData,
         }
@@ -343,14 +354,13 @@ impl Graph {
 
     pub fn new() -> Arc<Self> {
         Arc::new_cyclic(|graph| Graph {
-            bump: bumpalo::Bump::new(),
+            bump: Pin::new(Arc::new(bumpalo::Bump::new())),
             nodes: vec![],
             _marker: PhantomPinned,
             pool: Pool::new(graph.clone()),
         })
     }
 
-    // TODO: Dont take pool as arg, move it into self.
     pub fn compute(self: &Arc<Self>, mut node: usize) {
         let waker = Arc::new(NilWaker).into();
         let mut cx = Context::from_waker(&waker);
@@ -358,8 +368,15 @@ impl Graph {
         // We should return at some point with a Poll<()>
 
         loop {
+            println!(
+                "compputing: {:?} on {:?}",
+                Arc::as_ptr(&self.nodes[node]),
+                Arc::as_ptr(self)
+            );
             if self.nodes[node].done.load(Ordering::Acquire) {
-                break;
+                println!("Already done");
+                self.pool.assign(self.nodes[node].awaited_by.try_iter());
+                return;
                 // Poll children ig?
             }
 
@@ -368,36 +385,38 @@ impl Graph {
                 .is_being_polled
                 .swap(true, Ordering::Acquire)
             {
+                println!("Task already being polled");
                 return;
-                continue;
             }
 
-            match &self.nodes[node].future().poll(&mut cx) {
+            match unsafe { Pin::new(&mut *self.nodes[node].future.get()) }.poll(&mut cx) {
                 Poll::Ready(()) => {
                     if node == 0 {
-                        break;
+                        return;
                     }
                     self.nodes[node].done.store(true, Ordering::Release);
 
-                    //if !
-                    self.nodes[node]
-                        .is_being_polled
-                        .store(false, Ordering::Release);
-                    //{
-                    //    panic!("WTF! Recently polled node was marked as 'not being polled'");
-                    //}
                     // TODO: poll all awaiting children
                     // node = first child.
                     // self.pool.assign(remaining children)
                     // brug try_iter for at undgå blocking, hvis der ikke er nogen children.
                     //return;
-                    let n = self.nodes[node].qued;
 
-                    node = n;
+                    //let n = self.nodes[node].qued.load(Ordering::SeqCst);
+                    //if n >= 0 {
+                    //    node = n as usize;
+                    //} else {
+                    //    return;
+                    //}
+                    self.pool.assign(self.nodes[node].awaited_by.try_iter());
+                    self.nodes[node]
+                        .is_being_polled
+                        .store(false, Ordering::Release);
+                    return;
                 }
                 Poll::Pending => {
                     // just exit?
-                    let awaiting = self.nodes[node].qued;
+                    let awaiting = self.nodes[node].qued.load(Ordering::SeqCst);
                     self.nodes[node]
                         .is_being_polled
                         .store(false, Ordering::Release);
@@ -407,8 +426,8 @@ impl Graph {
                     //{
                     //    panic!("WTF! Recently polled node was marked as 'not being polled'");
                     //}
-                    if awaiting != 0 {
-                        node = awaiting
+                    if awaiting >= 0 {
+                        node = awaiting as usize
                     } else {
                         panic!("Pending nothing?");
                     }
@@ -457,6 +476,7 @@ impl Graph {
         // If a node has an incorrect incomming edge,
         // either it, or the parent, should be added to executor que.
         //
+        // TODO:
         // Nodes should still poll parents, if it awaits it, and its not already being polled.
         // Once a child awaits a parent, the worker will always be unoccupied afterwards anyway.
         //
@@ -465,35 +485,20 @@ impl Graph {
         // It might be easyest/ a good solution, to find a distribution of tasks when initializing the graf,
         // and then improving the distribution at runtime. This could be achived with 'execution masks'.
         // Then if we make the graf queriable, and so that user can mutate the distribution mask manually,
-        // and reads from mpi's timer
+        // and let user read benchmark data (How long execution/distribution took on different devices)
         // metalmorphosis suddenly provides primitives!
         assert_eq!(
             Arc::strong_count(&self),
             1,
             "Cannot realize Graph if there exists other references to it"
         );
+        unsafe { self.pool.init() }
         // Again. Less cursed with UnsafeCell
-        for n in unsafe { &mut *(&self.nodes as *const Vec<Node> as *mut Vec<Node>) } {
-            n.respawn()
+        for n in &self.nodes {
+            n.respawn(&self)
         }
         //let pool = Pool::new(unsafe { &mut *(self as *mut Self) });
-        unsafe { self.pool.init() }
 
-        // It still thinks the node is being polled. What happens if the node needs to be polled multiple times?
-        //pool.assign(0);
-        //pool.assign(0);
-        //pool.assign(0);
-        //pool.assign(0);
-        //pool.assign(0);
-        //pool.assign(0);
-        //thread::sleep(Duration::from_millis(100));
-        //pool.assign(0);
-        //pool.assign(0);
-        //pool.assign(0);
-        //pool.assign(0);
-        //pool.assign(2);
-        //pool.assign(1);
-        //thread::sleep(Duration::from_millis(100));
         self.pool.assign([0]);
         // TODO: Keep polling until 0 is done (on any mpi instance).
         //       maybe we handle networking here, until 0 is done?
@@ -510,7 +515,7 @@ impl Graph {
 
     pub fn print(&self) {
         for n in 0..self.nodes.len() {
-            println!("{n} -> {:?}", self.nodes[n].readers);
+            println!("{n} has {:?} refs", Arc::strong_count(&self.nodes[n]));
         }
     }
 }
@@ -544,12 +549,16 @@ impl Task for () {
 
 #[macro_export]
 macro_rules! task {
-    ($graph: ident, $f: expr) => {
-        let mut out = $graph.output();
-        $graph.task(Box::new(move || {
+    ($graph: ident, ($($cap: ident),* $(,)?), $f: expr) => {
+        //let mut out = $graph.output();
+        $graph.task(Box::new(move |node, graph| {
+            println!("initialized {:?} on {:?}", Arc::as_ptr(node), Arc::as_ptr(graph));
+            $(let $cap = node.own_symbol($cap, graph);)*
             Box::pin(async move {
                 let f = $f;
-                *out = f;
+                //*out = f;
+                //black_box(out);
+                black_box(f);
             })
         }));
     };
@@ -569,16 +578,12 @@ mod test {
     // metalmorphosis::test::F::2 -> metalmorphosis::test::X::1
     // metalmorphosis::test::F::2 <- metalmorphosis::test::X::1
     // metalmorphosis::test::X::1 <- metalmorphosis::test::F::2
-    //
-    // TODO: VVV
-    // Dont distribute if:
-    // qued node of node that forked (a), is awaiting a
     struct X;
     impl Task for X {
         type InitOutput = Symbol<f32>;
         type Output = f32;
         fn init(self, graph: &mut GraphHandle<Self>) -> Self::InitOutput {
-            task!(graph, 2.);
+            task!(graph, (), 2.);
             graph.this_node()
         }
     }
@@ -588,8 +593,11 @@ mod test {
         type InitOutput = Symbol<f32>;
         type Output = f32;
         fn init(self, graph: &mut GraphHandle<Self>) -> Self::InitOutput {
-            let x = graph.own_symbol(self.0);
-            task!(graph, x.await * 3. + 4.);
+            let x = self.0;
+            task!(graph, (x), {
+                black_box(x.await);
+                1. * 3. + 4.
+            });
             graph.this_node()
         }
     }
@@ -600,14 +608,14 @@ mod test {
         type Output = ();
         fn init(self, graph: &mut GraphHandle<Self>) -> Self::InitOutput {
             let x = graph.spawn(X);
-            let f = graph.spawn(F(x));
-            let f = graph.own_symbol(f);
-            let x = graph.own_symbol(x);
-            task!(graph, {
+            let f = graph.spawn(F(x.clone()));
+            task!(graph, (x, f), {
                 //let (x, y) = join!(x, f).await;
-                let x = x.await;
-                let y = f.await;
-                println!("f({x}) = {y}")
+                //let x = x.await;
+                //let y = f.await;
+                black_box(x.await);
+                black_box(f.await);
+                println!("========= f(x) = y")
             });
         }
     }
@@ -625,17 +633,10 @@ mod test {
     }
     */
 
-    #[test]
-    fn f_of_x() {
-        let mut graph = Graph::new();
-        graph.handle().spawn(Y);
-        graph.realize();
-    }
-
     #[bench]
-    fn f_of_x_bench(b: &mut Bencher) {
+    fn f_of_x(b: &mut Bencher) {
         b.iter(|| {
-            let mut graph = Graph::new();
+            let graph = Graph::new();
             graph.handle().spawn(Y);
             graph.realize();
         });

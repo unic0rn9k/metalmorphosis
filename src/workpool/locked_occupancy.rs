@@ -20,11 +20,10 @@ pub fn lock(src: &Mutex<OccupancyNode>) -> LockedOccupancyNode {
 
 impl<'a> LockedOccupancyNode<'a> {
     pub fn pop(&mut self, pool: &Arc<Pool>) -> Option<DeviceID> {
-        if let Some(this) = self.0.device().map(|s| s) {
+        if let Some(this) = self.0.device() {
             // This does not need to lock the mutex, since it will always be unlocked.
-            let ret = this.clone();
             *self.device() = pool.worker_handles[this.thread_id].prev_unoccupied.clone();
-            Some(ret)
+            Some(this)
         } else {
             None
         }
