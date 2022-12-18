@@ -4,12 +4,18 @@ Benchmarked includere overhead af at initializere task-graphen.
 ```sh
 $ cargo bench
 test test::empty_vec    ... bench:           5 ns/iter (+/- 2)
-test test::f_of_x_bench ... bench:     390,575 ns/iter (+/- 48,904)
+test test::f_of_x_bench ... bench:     420,575 ns/iter (+/- 48,904)
 test test::index        ... bench:           1 ns/iter (+/- 0)
 test test::mull_add_1   ... bench:           6 ns/iter (+/- 2)
 test test::mull_add_2   ... bench:          11 ns/iter (+/- 5)
 test test::spawn_async  ... bench:           0 ns/iter (+/- 0)
 ```
+
+efter at have valgt bedere Atomic Orderings blev `f_of_x` significant hurtigere.
+```sh
+test test::f_of_x       ... bench:     257,757 ns/iter (+/- 44,328)
+```
+
 # Pure MPI micro-benchmark
 Under er koden og resultaterne af et simpelt benchmark der poviser MPI's performance når man komunikkere mellem threads på den same maskine.
 
@@ -41,13 +47,13 @@ fn main() {
             let (time, st) = world.any_process().receive_vec::<u8>();
             //assert_eq!(time.len(), 16);
             let time: &Instant = unsafe { transmute(&time[0]) };
-            println!("time: {}", time.elapsed().as_nanos());
+            println!("time in nano seconds: {}", time.elapsed().as_nanos());
             println!("{st:?}");
 
             let (time, st) = world.any_process().receive_vec::<u8>();
             //assert_eq!(time.len(), 16);
             let time: &Instant = unsafe { transmute(&time[0]) };
-            println!("time: {}", time.elapsed().as_nanos());
+            println!("time in nano seconds: {}", time.elapsed().as_nanos());
             println!("{st:?}");
         }
         _ => unreachable!(),
@@ -62,8 +68,8 @@ $ mpiexec --hostfile hosts cargo r --release
      Running `target/release/mpi_sutff`
     Finished release [optimized] target(s) in 0.21s
      Running `target/release/mpi_sutff`
-time: 5404064
+time in nano seconds: 5404064
 Status { source_rank: 0, tag: 0 }
-time: 102028
+time in nano seconds: 102028
 Status { source_rank: 0, tag: 0 }
 ```

@@ -22,7 +22,6 @@
 //! - [ ] Executor / schedular
 //!     - Wakers? (wake me up inside)
 //! - [ ] multithreaded
-//!     - thread pool
 //!     - join future that works with array of symbols
 //! - [ ] Benchmark two-stage blur
 //!
@@ -138,16 +137,16 @@ impl<T: 'static> Future for OwnedSymbol<T> {
         if self.returner.done.load(Ordering::Acquire) {
             // TODO: respawn if strong_count is 1
             println!("task was done");
-            self.reader.qued.store(-1, Ordering::SeqCst);
+            self.reader.qued.store(-1, Ordering::Release);
             Poll::Ready(())
         } else {
             println!("task was pending {}", self.returner.this_node);
-            if self.reader.qued.load(Ordering::SeqCst) == self.returner.this_node as isize {
+            if self.reader.qued.load(Ordering::Acquire) == self.returner.this_node as isize {
                 return Poll::Pending;
             }
             self.reader
                 .qued
-                .store(self.returner.this_node as isize, Ordering::SeqCst);
+                .store(self.returner.this_node as isize, Ordering::Release);
             self.que.send(self.reader.this_node).unwrap();
             Poll::Pending
         }
@@ -155,13 +154,13 @@ impl<T: 'static> Future for OwnedSymbol<T> {
 }
 
 pub type BoxFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
-pub type AsyncFunction = Box<dyn Fn(Weak<Graph>) -> BoxFuture>;
+pub type AsyncFunction = Box<dyn Fn(&Arc<Graph>) -> BoxFuture>;
 
 pub struct Node {
     name: &'static str,
     task: AsyncFunction,
     future: UnsafeCell<BoxFuture>,
-    qued: AtomicIsize,
+    qued: AtomicIsize, // This is just a Waker...
     awaited_by: Receiver<usize>,
     awaiter: Sender<usize>,
     this_node: usize,
@@ -187,8 +186,8 @@ impl Node {
         }
     }
 
-    fn respawn(&mut self, graph: Weak<Graph>) {
-        self.future = UnsafeCell::new((self.task)(graph))
+    fn respawn(self: &Arc<Self>, graph: &Arc<Graph>) {
+        unsafe { (*self.future.get()) = (self.task)(graph) }
     }
 }
 
@@ -229,19 +228,6 @@ struct GraphSpawner<T, O>{
 graph.sub_graph(source: Task<Output=T>) -> smth idk
 */
 
-pub struct Graph {
-    // If this allocator is made reusable between graphs,
-    // it would be safe to create a new graph inside an async block
-    // and return a locked symbol from it. (also would require reusing the mpi universe)
-    //bump: Pin<Arc<bumpalo::Bump>>,
-    nodes: Vec<Arc<Node>>,
-    _marker: PhantomPinned,
-    pool: Arc<Pool>,
-    // sub_graphs: Vec<GraphSpawner>
-}
-unsafe impl Sync for Graph {}
-unsafe impl Send for Graph {}
-
 pub struct GraphBuilder<T: Task + ?Sized> {
     caller: usize,
     nodes: Arc<RefCell<Vec<Node>>>,
@@ -273,15 +259,7 @@ impl<T: Task> GraphBuilder<T> {
     fn build(self) -> Arc<Graph> {
         Arc::new_cyclic(|graph| Graph {
             //bump: Pin::new(Arc::new(bumpalo::Bump::new())),
-            nodes: self
-                .nodes
-                .borrow_mut()
-                .drain(..)
-                .map(|mut node| {
-                    node.respawn(graph.clone());
-                    Arc::new(node)
-                })
-                .collect(),
+            nodes: self.nodes.borrow_mut().drain(..).map(Arc::new).collect(),
             _marker: PhantomPinned,
             pool: Pool::new(graph.clone()),
         })
@@ -313,6 +291,19 @@ impl<T: Task> GraphBuilder<T> {
         }
     }
 }
+
+pub struct Graph {
+    // If this allocator is made reusable between graphs,
+    // it would be safe to create a new graph inside an async block
+    // and return a locked symbol from it. (also would require reusing the mpi universe)
+    //bump: Pin<Arc<bumpalo::Bump>>,
+    nodes: Vec<Arc<Node>>,
+    _marker: PhantomPinned,
+    pool: Arc<Pool>,
+    // sub_graphs: Vec<GraphSpawner>
+}
+unsafe impl Sync for Graph {}
+unsafe impl Send for Graph {}
 
 impl Graph {
     pub fn compute(self: &Arc<Self>, mut node: usize) {
@@ -347,7 +338,7 @@ impl Graph {
                     return;
                 }
                 Poll::Pending => {
-                    let awaiting = self.nodes[node].qued.load(Ordering::SeqCst);
+                    let awaiting = self.nodes[node].qued.load(Ordering::Acquire);
                     self.nodes[node]
                         .is_being_polled
                         .store(false, Ordering::Release);
@@ -420,9 +411,12 @@ impl Graph {
         );
         // Again. Less cursed with UnsafeCell
         unsafe { self.pool.init() }
+        for n in &self.nodes {
+            n.respawn(&self)
+        }
 
         self.compute(0);
-        while !self.nodes[0].done.load(Ordering::SeqCst) {
+        while !self.nodes[0].done.load(Ordering::Acquire) {
             std::hint::spin_loop()
         }
 
@@ -474,9 +468,8 @@ macro_rules! task {
     ($graph: ident, ($($cap: ident),* $(,)?), $f: expr) => {
         //let mut out = $graph.output();
         $graph.task(Box::new(move |_graph| {
+            $(let $cap = $cap.own(&_graph);)*
             Box::pin(async move {
-                let _graph = _graph.upgrade().unwrap();
-                $(let $cap = $cap.own(&_graph);)*
                 let f = $f;
                 //*out = f;
                 //black_box(out);
