@@ -160,9 +160,9 @@ pub type AsyncFunction = Box<dyn Fn(Weak<Graph>) -> BoxFuture>;
 pub struct Node {
     name: &'static str,
     task: AsyncFunction,
-    future: UnsafeCell<BoxFuture>, // Wrap this in mutex
+    future: UnsafeCell<BoxFuture>,
     qued: AtomicIsize,
-    awaited_by: Receiver<usize>, // for recieving children that are awaiting this node
+    awaited_by: Receiver<usize>,
     awaiter: Sender<usize>,
     this_node: usize,
     output: Buffer,
