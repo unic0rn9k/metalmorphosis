@@ -76,18 +76,21 @@
 #![feature(test)]
 
 mod error;
+mod mpi;
 mod workpool;
 
 use error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use workpool::Pool;
 
-use std::any::type_name;
+use std::any::{type_name, Any};
 use std::cell::{RefCell, UnsafeCell};
 use std::future::Future;
 use std::marker::{PhantomData, PhantomPinned};
 use std::mem::transmute;
 use std::pin::Pin;
+use std::ptr::{null, null_mut};
+use std::rc::Rc;
 use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool, AtomicIsize};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -124,7 +127,7 @@ pub struct OwnedSymbol<T> {
 unsafe impl<T> Send for OwnedSymbol<T> {}
 
 impl<T: 'static> Future for OwnedSymbol<T> {
-    type Output = ();
+    type Output = *const T;
 
     fn poll(
         self: std::pin::Pin<&mut Self>,
@@ -135,10 +138,11 @@ impl<T: 'static> Future for OwnedSymbol<T> {
             self.returner.this_node, self.reader.this_node,
         );
         if self.returner.done.load(Ordering::Acquire) {
-            // TODO: respawn if strong_count is 1
             println!("task was done");
             self.reader.qued.store(-1, Ordering::Release);
-            Poll::Ready(())
+            // TODO: Replace with downcast_unchecked_ref()
+            //Poll::Ready(self.returner.output.data.downcast_ref().unwrap() as *const T)
+            Poll::Ready(null())
         } else {
             println!("task was pending {}", self.returner.this_node);
             if self.reader.qued.load(Ordering::Acquire) == self.returner.this_node as isize {
@@ -167,6 +171,7 @@ pub struct Node {
     output: Buffer,
     done: AtomicBool,
     is_being_polled: AtomicBool,
+    mpi_instance: i32,
 }
 
 impl Node {
@@ -183,6 +188,7 @@ impl Node {
             output: Buffer::new(),
             done: AtomicBool::new(false),
             is_being_polled: AtomicBool::new(false),
+            mpi_instance: 0,
         }
     }
 
@@ -191,8 +197,9 @@ impl Node {
     }
 }
 
+// If you want the output to point to some manually allocated memory, it will be a lot of pointer indirections...
 pub struct Buffer {
-    data: (),
+    data: Box<dyn Any>,
     de: fn(&'static [u8], &mut ()) -> Result<()>,
     se: fn(&()) -> Result<Vec<u8>>,
 }
@@ -200,15 +207,15 @@ pub struct Buffer {
 impl Buffer {
     pub fn new() -> Self {
         Self {
-            data: (),
+            data: Box::new(()),
             de: |_, _| Ok(()),
             se: |_| Ok(vec![]),
         }
     }
 
-    pub fn from<'a, T: Serialize + Deserialize<'a>>(data: &mut T) -> Self {
+    pub fn from<'a, T: Serialize + Deserialize<'a> + 'static>(data: Box<T>) -> Self {
         Buffer {
-            data: (),
+            data,
             de: |b, out| {
                 *unsafe { transmute::<_, &mut T>(out) } = bincode::deserialize(b)?;
                 Ok(())
@@ -229,8 +236,9 @@ graph.sub_graph(source: Task<Output=T>) -> smth idk
 */
 
 pub struct GraphBuilder<T: Task + ?Sized> {
+    outputs: Rc<RefCell<Vec<Buffer>>>,
     caller: usize,
-    nodes: Arc<RefCell<Vec<Node>>>,
+    nodes: Rc<RefCell<Vec<Node>>>,
     marker: PhantomData<T>,
 }
 
@@ -241,6 +249,7 @@ impl<T: Task> GraphBuilder<T> {
 
     fn next<U: Task>(&self) -> GraphBuilder<U> {
         GraphBuilder {
+            outputs: self.outputs.clone(),
             caller: self.nodes.borrow().len() - 1,
             nodes: self.nodes.clone(),
             marker: PhantomData,
@@ -258,7 +267,7 @@ impl<T: Task> GraphBuilder<T> {
 
     fn build(self) -> Arc<Graph> {
         Arc::new_cyclic(|graph| Graph {
-            //bump: Pin::new(Arc::new(bumpalo::Bump::new())),
+            outputs: self.outputs.borrow_mut().drain(..).collect(),
             nodes: self.nodes.borrow_mut().drain(..).map(Arc::new).collect(),
             _marker: PhantomPinned,
             pool: Pool::new(graph.clone()),
@@ -268,7 +277,8 @@ impl<T: Task> GraphBuilder<T> {
     pub fn main(task: T) -> Self {
         let mut entry = Self {
             caller: 0,
-            nodes: Arc::new(RefCell::new(vec![])),
+            outputs: Rc::new(RefCell::new(vec![])),
+            nodes: Rc::new(RefCell::new(vec![])),
             marker: PhantomData,
         };
         entry.spawn(task);
@@ -296,7 +306,7 @@ pub struct Graph {
     // If this allocator is made reusable between graphs,
     // it would be safe to create a new graph inside an async block
     // and return a locked symbol from it. (also would require reusing the mpi universe)
-    //bump: Pin<Arc<bumpalo::Bump>>,
+    outputs: Vec<Buffer>,
     nodes: Vec<Arc<Node>>,
     _marker: PhantomPinned,
     pool: Arc<Pool>,
@@ -315,23 +325,34 @@ impl Graph {
         loop {
             println!("compputing: {node}");
             if self.nodes[node].done.load(Ordering::Acquire) {
-                self.pool.assign(self.nodes[node].awaited_by.try_iter());
+                self.pool.assign(
+                    self.nodes[node]
+                        .awaited_by
+                        .try_iter()
+                        .map(|i| self.nodes[i].clone()),
+                );
                 return;
             }
 
-            // TODO: Move this check into WorkPool::assign
-            if self.nodes[node]
-                .is_being_polled
-                .swap(true, Ordering::Acquire)
-            {
-                return;
-            }
+            // Move this check into WorkPool::assign
+            //if self.nodes[node]
+            //    .is_being_polled
+            //    .swap(true, Ordering::Acquire)
+            //{
+            //    return;
+            //}
 
             match unsafe { Pin::new(&mut *self.nodes[node].future.get()) }.poll(&mut cx) {
                 Poll::Ready(()) => {
                     self.nodes[node].done.store(true, Ordering::Release);
 
-                    self.pool.assign(self.nodes[node].awaited_by.try_iter());
+                    // dont clone, use arc in poll and recver
+                    self.pool.assign(
+                        self.nodes[node]
+                            .awaited_by
+                            .try_iter()
+                            .map(|i| self.nodes[i].clone()),
+                    );
                     self.nodes[node]
                         .is_being_polled
                         .store(false, Ordering::Release);
@@ -393,10 +414,6 @@ impl Graph {
         // If a node has an incorrect incomming edge,
         // either it, or the parent, should be added to executor que.
         //
-        // TODO:
-        // Nodes should still poll parents, if it awaits it, and its not already being polled.
-        // Once a child awaits a parent, the worker will always be unoccupied afterwards anyway.
-        //
         // Just to be sure. Print if there are still unfinished nodes left before killing.
         //
         // It might be easyest/ a good solution, to find a distribution of tasks when initializing the graf,
@@ -404,29 +421,51 @@ impl Graph {
         // Then if we make the graf queriable, and so that user can mutate the distribution mask manually,
         // and let user read benchmark data (How long execution/distribution took on different devices)
         // metalmorphosis suddenly provides primitives!
+        //
+        // Use Reciever::iter to implement custom pre-schedulers as closures.
+        // If the the graph kept track of nodes reselution at evaluation time, this could be done dynamically.
+        //
+        // # Naiv distributed shcedular
+        // we start with the 0-in-degree nodes
+        // we have array where each element (usize) corresponds to one of those nodes
+        // then evaluate children (taking array of indicies from parents).
+        // Each child gets assigned to the index of the node that it had the most incomming edges from
+        // repeat for children (taking array of the indicies assign to their parents)
+        // also, dont count edges from parents that have already shared value with a given machine.
+        //
+        // the algorithm does not distribute nodes evenly, but it will minimize network communications
+        // it also does not account for message size or computation cost
         assert_eq!(
             Arc::strong_count(&self),
             1,
             "Cannot realize Graph if there exists other references to it"
         );
         // Again. Less cursed with UnsafeCell
-        unsafe { self.pool.init() }
         for n in &self.nodes {
             n.respawn(&self)
         }
+
+        //let (_, mut network) = mpi::instantiate();
+
+        unsafe { self.pool.init(0) }
+
+        //network.run();
 
         self.compute(0);
         while !self.nodes[0].done.load(Ordering::Acquire) {
             std::hint::spin_loop()
         }
 
-        // TODO: Keep polling until 0 is done (on any mpi instance).
         //       maybe we handle networking here, until 0 is done?
         // pool.network();
 
         // Check that other mpi instances are done before killing
         // This might mean that one of the mpi instances needs to know when to kill, and signal apropriately
-        self.pool.kill();
+        self.pool.finish();
+        match Arc::try_unwrap(self) {
+            Ok(this) => this.pool.kill(),
+            Err(s) => panic!("fuck {}", Arc::strong_count(&s)),
+        }
     }
 
     pub fn print(&self) {
