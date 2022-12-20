@@ -9,6 +9,7 @@ test test::index        ... bench:           1 ns/iter (+/- 0)
 test test::mull_add_1   ... bench:           6 ns/iter (+/- 2)
 test test::mull_add_2   ... bench:          11 ns/iter (+/- 5)
 test test::spawn_async  ... bench:           0 ns/iter (+/- 0)
+test test::atomic_load  ... bench:           1 ns/iter (+/- 0)
 ```
 
 efter at have valgt bedere Atomic Orderings blev `f_of_x` significant hurtigere.

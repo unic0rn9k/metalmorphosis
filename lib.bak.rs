@@ -198,10 +198,14 @@ impl Node {
 
     fn output<T: 'static>(self: &Arc<Self>) -> *mut T {
         unsafe {
-            (*self.output.get()).data.downcast_mut().unwrap_or_else(|| {
+            let output = &mut (*self.output.get()).data;
+            let o = format!("{:?}", output);
+            output.downcast_mut().unwrap_or_else(|| {
                 panic!(
-                    "Tried to get output with incorrect runtime type. Expected {}",
-                    type_name::<T>()
+                    "Tried to get output with incorrect runtime type, on node {}. Expected {}, but found {:?}",
+                    self.this_node,
+                    type_name::<T>(),
+                    o.type_id()
                 )
             })
         }
@@ -218,7 +222,18 @@ pub struct Buffer {
 impl Buffer {
     pub fn new<T: Serialize + Deserialize<'static> + Sync + 'static>() -> Self {
         Buffer {
-            data: unsafe { Box::<T>::new_uninit().assume_init() },
+            data: Box::new(()),
+            de: |b, out| {
+                *unsafe { transmute::<_, &mut T>(out) } = bincode::deserialize(b)?;
+                Ok(())
+            },
+            se: |v| Ok(bincode::serialize::<T>(unsafe { transmute(v) })?),
+        }
+    }
+
+    pub fn from<T: Serialize + Deserialize<'static> + Sync + 'static>(data: Box<T>) -> Self {
+        Buffer {
+            data,
             de: |b, out| {
                 *unsafe { transmute::<_, &mut T>(out) } = bincode::deserialize(b)?;
                 Ok(())
@@ -302,6 +317,10 @@ impl<T: Task> GraphBuilder<T> {
             reader: self.caller,
             marker: PhantomData,
         }
+    }
+
+    pub fn init_output(&mut self, init: Box<T::Output>) {
+        self.nodes.borrow_mut()[self.caller].output = UnsafeCell::new(Buffer::from(init))
     }
 }
 
@@ -523,8 +542,7 @@ macro_rules! task {
         $graph.task(Box::new(move |_graph, _node| {
             $(let $cap = $cap.own(&_graph);)*
             Box::pin(async move {
-                let out: Self::Output = $f;
-                unsafe{(*_node.output()) = out}
+                unsafe{*_node.output() = {$f}}
             })
         }));
     };
@@ -549,6 +567,7 @@ mod test {
         type InitOutput = Symbol<f32>;
         type Output = f32;
         fn init(self, graph: &mut GraphBuilder<Self>) -> Self::InitOutput {
+            graph.init_output(Box::new(0.));
             task!(graph, (), 2.);
             graph.this_node()
         }
@@ -559,8 +578,9 @@ mod test {
         type InitOutput = Symbol<f32>;
         type Output = f32;
         fn init(self, graph: &mut GraphBuilder<Self>) -> Self::InitOutput {
+            graph.init_output(Box::new(0.));
             let x = graph.lock_symbol(self.0);
-            task!(graph, (x), unsafe { *(x.await.0) } * 3. + 4.);
+            task!(graph, (x), *(x.await.0) * 3. + 4.);
             graph.this_node()
         }
     }
@@ -574,10 +594,11 @@ mod test {
             let f = graph.spawn(F(x));
             let f = graph.lock_symbol(f);
             let x = graph.lock_symbol(x);
+            graph.init_output(Box::new(()));
             task!(graph, (x, f), {
-                let y = unsafe { *f.await.0 };
-                let x = unsafe { *x.await.0 };
-                println!("f({x}) = ({y})")
+                let y = *f.await.0;
+                let x = *x.await.0;
+                println!("f({x}) = {y}");
             });
         }
     }

@@ -1,4 +1,5 @@
 use std::{
+    cell::UnsafeCell,
     sync::{
         atomic::{AtomicIsize, AtomicU16, Ordering},
         Arc, Mutex, Weak,
@@ -29,7 +30,7 @@ pub struct Worker {
 impl Worker {
     pub fn new(home: ThreadID) -> Self {
         Self {
-            task: AtomicIsize::new(-1),
+            task: AtomicIsize::new(-3),
             prev_unoccupied: home.unoccupied(),
             home,
         }
@@ -37,18 +38,18 @@ impl Worker {
 }
 
 pub struct Pool {
-    graph: Weak<Graph>,
-    mpi_instance: i32, // What machine does this pool live on?
+    mpi_instance: UnsafeCell<i32>, // What machine does this pool live on?
     last_unoccupied: Arc<Mutex<WorkerStack>>,
     worker_handles: Vec<Arc<Worker>>,
     thread_handles: Vec<JoinHandle<()>>,
 }
+unsafe impl Sync for Pool {}
 
 impl Pool {
     pub fn new(graph: Weak<Graph>) -> Arc<Self> {
         Arc::new_cyclic(|pool| {
-            //let threads = std::thread::available_parallelism().unwrap().into();
-            let threads = 4;
+            //let threads = 4;
+            let threads = std::thread::available_parallelism().unwrap().into();
             let mut worker_handles = vec![];
             let mut thread_handles = vec![];
             let last_unoccupied = Arc::new(Mutex::new(WorkerStack::new()));
@@ -69,6 +70,7 @@ impl Pool {
                     let graph = graph
                         .upgrade()
                         .expect("Graph dropped before Pool was initialized");
+                    worker.task.store(-1, Ordering::Release);
 
                     loop {
                         let mut task = worker.task.load(Ordering::Acquire);
@@ -91,8 +93,7 @@ impl Pool {
             }
 
             Self {
-                graph,
-                mpi_instance: 0,
+                mpi_instance: UnsafeCell::new(0),
                 last_unoccupied,
                 thread_handles,
                 worker_handles,
@@ -100,11 +101,17 @@ impl Pool {
         })
     }
 
-    pub unsafe fn init(self: &Arc<Self>, mpi: i32) {
+    pub fn init(self: &Arc<Self>, mpi: i32) {
+        unsafe { *self.mpi_instance.get() = mpi }
         // Some unholyness is still left tho
-        for thread in self.thread_handles.iter() {
+        for thread in &self.thread_handles {
             thread.thread().unpark();
         }
+        while self
+            .worker_handles
+            .iter()
+            .any(|w| w.task.load(Ordering::SeqCst) == -3)
+        {}
     }
 
     pub fn finish(self: &Arc<Self>) {
@@ -139,6 +146,10 @@ impl Pool {
         }
     }
 
+    fn mpi_instance(&self) -> i32 {
+        unsafe { *self.mpi_instance.get() }
+    }
+
     pub fn assign(self: &Arc<Self>, task: impl IntoIterator<Item = Arc<Node>>) {
         let mut occupancy = lock(&self.last_unoccupied);
         for task in task {
@@ -147,7 +158,7 @@ impl Pool {
             if task.is_being_polled.swap(true, Ordering::Acquire) {
                 continue;
             }
-            if task.mpi_instance != self.mpi_instance {
+            if task.mpi_instance != self.mpi_instance() {
                 continue;
             }
 

@@ -4,9 +4,20 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 // If node finished, send await to networker
 // If node awaited, send Brodcast
 
+// Implementer nu:
+// - outputs
+// - distribution
+// - call mpi time
+// - method for getting/setting mpi_instance of node with symbol
+//
+// - NodeBuilder
+// - method 'scheduler' that takes fn(node)->mpi_instance
+// - call 'schedular' in Graph on all nodes, in topological ordering, spuriously
+
 pub enum Event {
-    AwaitTask,
-    Brodcast,
+    Kill,
+    AwaitNode,
+    BrodcastNode,
 }
 
 pub struct Networker {
