@@ -7,7 +7,7 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use crate::{error::Result, Graph, Node};
+use crate::{error::Result, mpi, Graph, Node};
 
 mod locked_occupancy;
 use locked_occupancy::*;
@@ -159,6 +159,9 @@ impl Pool {
                 continue;
             }
             if task.mpi_instance != self.mpi_instance() {
+                task.net()
+                    .send(mpi::Event::AwaitNode(task.clone()))
+                    .unwrap();
                 continue;
             }
 

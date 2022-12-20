@@ -170,6 +170,7 @@ pub struct Node {
     done: AtomicBool,
     is_being_polled: AtomicBool,
     mpi_instance: i32,
+    net_events: UnsafeCell<Option<Sender<mpi::Event>>>,
 }
 unsafe impl Send for Node {}
 unsafe impl Sync for Node {}
@@ -189,11 +190,20 @@ impl Node {
             done: AtomicBool::new(false),
             is_being_polled: AtomicBool::new(false),
             mpi_instance: 0,
+            net_events: UnsafeCell::new(None),
         }
     }
 
     fn respawn(self: &Arc<Self>, graph: &Arc<Graph>) {
         unsafe { (*self.future.get()) = (self.task)(graph, self.clone()) }
+    }
+
+    fn use_net(self: &Arc<Self>, net: Option<Sender<mpi::Event>>) {
+        unsafe { (*self.net_events.get()) = net }
+    }
+
+    fn net(self: &Arc<Self>) -> Sender<mpi::Event> {
+        unsafe { (*self.net_events.get()).clone().expect("Network not set") }
     }
 
     fn output<T: 'static>(self: &Arc<Self>) -> *mut T {
@@ -211,20 +221,34 @@ impl Node {
 // If you want the output to point to some manually allocated memory, it will be a lot of pointer indirections...
 pub struct Buffer {
     data: Box<dyn Any>,
-    de: fn(&'static [u8], &mut ()) -> Result<()>,
-    se: fn(&()) -> Result<Vec<u8>>,
+    de: fn(Vec<u8>, *mut ()) -> Result<()>,
+    se: fn(*const ()) -> Result<Vec<u8>>,
 }
 
 impl Buffer {
     pub fn new<T: Serialize + Deserialize<'static> + Sync + 'static>() -> Self {
-        Buffer {
-            data: unsafe { Box::<T>::new_uninit().assume_init() },
-            de: |b, out| {
-                *unsafe { transmute::<_, &mut T>(out) } = bincode::deserialize(b)?;
-                Ok(())
-            },
-            se: |v| Ok(bincode::serialize::<T>(unsafe { transmute(v) })?),
+        unsafe {
+            Buffer {
+                data: Box::<T>::new_uninit().assume_init(),
+                de: |b, out| {
+                    *(out as *mut T) = bincode::deserialize(transmute(&b[..]))?;
+                    Ok(())
+                },
+                se: |v| Ok(bincode::serialize::<T>(&*(v as *const T))?),
+            }
         }
+    }
+
+    pub fn serialize(&self) -> Vec<u8> {
+        (self.se)(unsafe { transmute::<&dyn Any, (*const (), &())>(self.data.as_ref()).0 })
+            .expect("Buffer serialisation failed")
+    }
+
+    pub fn deserialize(&mut self, data: Vec<u8>) {
+        (self.de)(data, unsafe {
+            transmute::<&dyn Any, (*mut (), &())>(self.data.as_ref()).0
+        })
+        .unwrap()
     }
 }
 
@@ -303,6 +327,10 @@ impl<T: Task> GraphBuilder<T> {
             marker: PhantomData,
         }
     }
+
+    pub fn set_mpi_instance(&mut self, mpi: i32) {
+        self.nodes.borrow_mut()[self.caller].mpi_instance = mpi
+    }
 }
 
 pub struct Graph {
@@ -312,6 +340,7 @@ pub struct Graph {
     nodes: Vec<Arc<Node>>,
     _marker: PhantomPinned,
     pool: Arc<Pool>,
+    mpi_instance: i32,
     // sub_graphs: Vec<GraphSpawner>
 }
 unsafe impl Sync for Graph {}
@@ -320,6 +349,7 @@ unsafe impl Send for Graph {}
 impl Graph {
     pub fn from_nodes(nodes: Vec<Arc<Node>>) -> Arc<Self> {
         Arc::new_cyclic(|graph| Graph {
+            mpi_instance: 0,
             nodes,
             _marker: PhantomPinned,
             pool: Pool::new(graph.clone()),
@@ -328,6 +358,7 @@ impl Graph {
 
     pub fn extend(self: &Arc<Self>, nodes: Vec<Arc<Node>>) -> Arc<Self> {
         Arc::new(Graph {
+            mpi_instance: self.mpi_instance,
             nodes,
             _marker: PhantomPinned,
             pool: self.pool.clone(),
@@ -341,7 +372,17 @@ impl Graph {
         // We should return at some point with a Poll<()>
 
         loop {
-            println!("compputing: {node}");
+            if self.nodes[node].mpi_instance != self.mpi_instance {
+                self.nodes[node]
+                    .net()
+                    .send(mpi::Event::AwaitNode(self.nodes[node].clone()))
+                    .unwrap();
+                continue;
+            }
+            println!(
+                "compputing: {node} on mpi instance {}",
+                self.nodes[node].mpi_instance
+            );
             if self.nodes[node].done.load(Ordering::Acquire) {
                 self.pool.assign(
                     self.nodes[node]
@@ -458,21 +499,16 @@ impl Graph {
             1,
             "Cannot realize Graph if there exists other references to it"
         );
+
+        let (net_events, mut network) = mpi::instantiate(self.clone());
+        self.pool.init(network.rank());
         for n in &self.nodes {
+            n.use_net(Some(net_events.clone()));
             n.respawn(&self)
         }
-
-        //let (_, mut network) = mpi::instantiate();
-        self.pool.init(0);
-        //network.run();
-
         self.compute(0);
-        while !self.nodes[0].done.load(Ordering::Acquire) {
-            std::hint::spin_loop()
-        }
 
-        //       maybe we handle networking here, until 0 is done?
-        // pool.network();
+        network.run();
 
         // Check that other mpi instances are done before killing
         // This might mean that one of the mpi instances needs to know when to kill, and signal apropriately
@@ -549,6 +585,7 @@ mod test {
         type InitOutput = Symbol<f32>;
         type Output = f32;
         fn init(self, graph: &mut GraphBuilder<Self>) -> Self::InitOutput {
+            graph.set_mpi_instance(1);
             task!(graph, (), 2.);
             graph.this_node()
         }
