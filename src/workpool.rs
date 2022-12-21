@@ -7,7 +7,7 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use crate::{error::Result, mpi, Graph, Node};
+use crate::{error::Result, net, Graph, Node};
 
 mod locked_occupancy;
 use locked_occupancy::*;
@@ -38,7 +38,7 @@ impl Worker {
 }
 
 pub struct Pool {
-    mpi_instance: UnsafeCell<i32>, // What machine does this pool live on?
+    mpi_instance: UnsafeCell<i32>,
     last_unoccupied: Arc<Mutex<WorkerStack>>,
     worker_handles: Vec<Arc<Worker>>,
     thread_handles: Vec<JoinHandle<()>>,
@@ -48,7 +48,6 @@ unsafe impl Sync for Pool {}
 impl Pool {
     pub fn new(graph: Weak<Graph>) -> Arc<Self> {
         Arc::new_cyclic(|pool| {
-            //let threads = 4;
             let threads = std::thread::available_parallelism().unwrap().into();
             let mut worker_handles = vec![];
             let mut thread_handles = vec![];
@@ -103,7 +102,6 @@ impl Pool {
 
     pub fn init(self: &Arc<Self>, mpi: i32) {
         unsafe { *self.mpi_instance.get() = mpi }
-        // Some unholyness is still left tho
         for thread in &self.thread_handles {
             thread.thread().unpark();
         }
@@ -132,7 +130,6 @@ impl Pool {
     }
 
     pub fn kill(self: Arc<Self>) {
-        //       Also how do we know that pools on other mpi instances aren't running?
         use std::panic;
 
         let mut this = match Arc::try_unwrap(self) {
@@ -153,14 +150,12 @@ impl Pool {
     pub fn assign(self: &Arc<Self>, task: impl IntoIterator<Item = Arc<Node>>) {
         let mut occupancy = lock(&self.last_unoccupied);
         for task in task {
-            println!("Assigning task");
-
             if task.is_being_polled.swap(true, Ordering::Acquire) {
                 continue;
             }
             if task.mpi_instance != self.mpi_instance() {
                 task.net()
-                    .send(mpi::Event::AwaitNode(task.clone()))
+                    .send(net::Event::AwaitNode(task.clone()))
                     .unwrap();
                 continue;
             }
@@ -177,7 +172,6 @@ impl Pool {
                     "This is so sad. Were all OUT OF DEVICES. Thought there are still {} live threads",
                     self.thread_handles.iter().map(|t| !t.is_finished() as u32).sum::<u32>()
                 )
-                // TODO: Probably save node for later shceduling. Maybe just send it to the awaited_by of som node that is going to polled soon.
             }
         }
     }
