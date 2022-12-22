@@ -43,7 +43,7 @@ pub struct Networker {
 }
 
 impl Networker {
-    pub fn run(&mut self) {
+    pub fn run(mut self) {
         return;
         let size = self.world.size();
         for event in self.events.try_iter() {

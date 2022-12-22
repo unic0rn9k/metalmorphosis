@@ -14,10 +14,10 @@ pub use mpi::time;
 use std::any::{type_name, Any};
 use std::cell::{RefCell, UnsafeCell};
 use std::future::Future;
+use std::hint::spin_loop;
 use std::marker::{PhantomData, PhantomPinned};
 use std::mem::{transmute, MaybeUninit};
 use std::pin::Pin;
-use std::ptr::{null, null_mut};
 use std::rc::Rc;
 use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool, AtomicIsize};
@@ -342,13 +342,15 @@ impl Graph {
         );
 
         let (net_events, mut network) = net::instantiate(self.clone());
-        self.pool.init(network.rank());
+        self.pool.init(0);
         for n in &self.nodes {
             n.use_net(Some(net_events.clone()));
             n.respawn(&self)
         }
         self.compute(0);
-
+        while !self.nodes[0].done.load(Ordering::Acquire) {
+            spin_loop()
+        }
         network.run();
 
         self.pool.finish();
@@ -412,7 +414,7 @@ mod test {
         type InitOutput = Symbol<f32>;
         type Output = f32;
         fn init(self, graph: &mut GraphBuilder<Self>) -> Self::InitOutput {
-            graph.set_mpi_instance(1);
+            //graph.set_mpi_instance(1);
             task!(graph, (), 2.);
             graph.this_node()
         }
@@ -441,6 +443,7 @@ mod test {
             task!(graph, (x, f), {
                 let y = unsafe { *f.await.0 };
                 let x = unsafe { *x.await.0 };
+                println!("f({x}) = {y}");
             });
         }
     }
