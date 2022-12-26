@@ -1,4 +1,8 @@
-use mpi::traits::{Communicator, Destination, Equivalence, Source};
+use mpi::{
+    point_to_point::ReceiveFuture,
+    request::WaitGuard,
+    traits::{Communicator, Destination, Equivalence, Source},
+};
 use serde_derive::{Deserialize, Serialize};
 use std::sync::{
     atomic::Ordering,
@@ -6,7 +10,7 @@ use std::sync::{
     Arc,
 };
 
-use crate::{workpool::ThreadID, Graph, Node};
+use crate::{Graph, Node};
 
 // If node finished, send await to networker
 // If node awaited, send Brodcast
@@ -23,16 +27,26 @@ use crate::{workpool::ThreadID, Graph, Node};
 pub enum Event {
     Kill,
     AwaitNode(Arc<Node>),
-    BrodcastNode(Arc<Node>),
+    NodeReady(Arc<Node>, i32),
 }
 
 #[derive(Serialize, Deserialize)]
-pub enum SendableEvent {
+pub enum Message {
     Kill,
-    AwaitNode(usize),
-    BrodcastNode(Vec<u8>),
+    AwaitNode { node: usize },
+    NodeReady { data: Vec<u8>, node: usize },
 }
-use SendableEvent::*;
+
+impl Message {
+    fn serialize(&self) -> Vec<u8> {
+        bincode::serialize(&self).unwrap()
+    }
+    fn deserialize(data: Vec<u8>) -> Self {
+        bincode::deserialize(&data).expect("Failed to deserialize network event")
+    }
+}
+
+use Message::*;
 
 pub struct Networker {
     events: Receiver<Event>,
@@ -44,39 +58,44 @@ pub struct Networker {
 impl Networker {
     pub fn run(&mut self) {
         let size = self.world.size();
-        for event in self.events.iter() {
-            match event {
+        for event in self.events.try_iter() {
+            // when we receve await, we need to signal it to graph.
+
+            let (dst, msg) = match event {
                 Event::Kill => {
                     for n in 0..size {
-                        self.world
-                            .process_at_rank(n)
-                            .send(&bincode::serialize(&Kill).unwrap());
+                        self.world.process_at_rank(n).send(&Kill.serialize());
                     }
                     return;
                 }
 
-                Event::AwaitNode(node) => {
-                    self.world
-                        .process_at_rank(node.mpi_instance)
-                        .send(&bincode::serialize(&AwaitNode(node.this_node)).unwrap());
-                    unsafe {
-                        (*node.output.get()).deserialize(
-                            self.world
-                                .process_at_rank(node.mpi_instance)
-                                .receive_vec::<u8>()
-                                .0,
-                        );
+                Event::AwaitNode(node) => (
+                    node.mpi_instance,
+                    AwaitNode {
+                        node: node.this_node,
                     }
-                    node.done.store(true, Ordering::Release);
-                }
+                    .serialize(),
+                ),
 
-                Event::BrodcastNode(node) => unsafe {
-                    self.world.process_at_rank(node.mpi_instance).send(
-                        &bincode::serialize(&BrodcastNode((*node.output.get()).serialize()))
-                            .unwrap(),
+                Event::NodeReady(node, rank) => unsafe {
+                    (
+                        rank,
+                        NodeReady {
+                            data: (*node.output.get()).serialize(),
+                            node: node.this_node,
+                        }
+                        .serialize(),
                     )
                 },
-            }
+            };
+
+            mpi::request::scope(|scope| {
+                let _ = WaitGuard::from(
+                    self.world
+                        .process_at_rank(dst)
+                        .immediate_buffered_send(scope, &msg),
+                );
+            });
         }
     }
     pub fn rank(&self) -> i32 {

@@ -65,13 +65,14 @@
 #![feature(new_uninit)]
 
 mod error;
-mod mpi;
+mod net;
 mod workpool;
 
 use error::{Error, Result};
 use serde::{Deserialize, Serialize};
 use workpool::Pool;
 
+pub use mpi::time;
 use std::any::{type_name, Any};
 use std::cell::{RefCell, UnsafeCell};
 use std::future::Future;
@@ -170,7 +171,7 @@ pub struct Node {
     done: AtomicBool,
     is_being_polled: AtomicBool,
     mpi_instance: i32,
-    net_events: UnsafeCell<Option<Sender<mpi::Event>>>,
+    net_events: UnsafeCell<Option<Sender<net::Event>>>,
 }
 unsafe impl Send for Node {}
 unsafe impl Sync for Node {}
@@ -198,11 +199,11 @@ impl Node {
         unsafe { (*self.future.get()) = (self.task)(graph, self.clone()) }
     }
 
-    fn use_net(self: &Arc<Self>, net: Option<Sender<mpi::Event>>) {
+    fn use_net(self: &Arc<Self>, net: Option<Sender<net::Event>>) {
         unsafe { (*self.net_events.get()) = net }
     }
 
-    fn net(self: &Arc<Self>) -> Sender<mpi::Event> {
+    fn net(self: &Arc<Self>) -> Sender<net::Event> {
         unsafe { (*self.net_events.get()).clone().expect("Network not set") }
     }
 
@@ -375,9 +376,9 @@ impl Graph {
             if self.nodes[node].mpi_instance != self.mpi_instance {
                 self.nodes[node]
                     .net()
-                    .send(mpi::Event::AwaitNode(self.nodes[node].clone()))
+                    .send(net::Event::AwaitNode(self.nodes[node].clone()))
                     .unwrap();
-                continue;
+                return;
             }
             println!(
                 "compputing: {node} on mpi instance {}",
@@ -392,14 +393,6 @@ impl Graph {
                 );
                 return;
             }
-
-            // Move this check into WorkPool::assign
-            //if self.nodes[node]
-            //    .is_being_polled
-            //    .swap(true, Ordering::Acquire)
-            //{
-            //    return;
-            //}
 
             match unsafe { Pin::new(&mut *self.nodes[node].future.get()) }.poll(&mut cx) {
                 Poll::Ready(()) => {
@@ -500,7 +493,7 @@ impl Graph {
             "Cannot realize Graph if there exists other references to it"
         );
 
-        let (net_events, mut network) = mpi::instantiate(self.clone());
+        let (net_events, mut network) = net::instantiate(self.clone());
         self.pool.init(network.rank());
         for n in &self.nodes {
             n.use_net(Some(net_events.clone()));
@@ -510,8 +503,6 @@ impl Graph {
 
         network.run();
 
-        // Check that other mpi instances are done before killing
-        // This might mean that one of the mpi instances needs to know when to kill, and signal apropriately
         self.pool.finish();
         match Arc::try_unwrap(self) {
             Ok(this) => this.pool.kill(),

@@ -7,7 +7,7 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use crate::{error::Result, mpi, Graph, Node};
+use crate::{error::Result, net, Graph, Node};
 
 mod locked_occupancy;
 use locked_occupancy::*;
@@ -150,6 +150,7 @@ impl Pool {
         unsafe { *self.mpi_instance.get() }
     }
 
+    // Executor tries to reuse same threads. But doesn't try to use same threads for the same tasks
     pub fn assign(self: &Arc<Self>, task: impl IntoIterator<Item = Arc<Node>>) {
         let mut occupancy = lock(&self.last_unoccupied);
         for task in task {
@@ -160,7 +161,7 @@ impl Pool {
             }
             if task.mpi_instance != self.mpi_instance() {
                 task.net()
-                    .send(mpi::Event::AwaitNode(task.clone()))
+                    .send(net::Event::AwaitNode(task.clone()))
                     .unwrap();
                 continue;
             }
