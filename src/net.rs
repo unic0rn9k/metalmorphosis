@@ -1,5 +1,5 @@
 use mpi::{
-    point_to_point::ReceiveFuture,
+    point_to_point::{ReceiveFuture, Status},
     request::WaitGuard,
     traits::{Communicator, Destination, Equivalence, Source},
 };
@@ -24,6 +24,8 @@ use crate::{Graph, Node};
 // - method 'scheduler' that takes fn(node)->mpi_instance
 // - call 'schedular' in Graph on all nodes, in topological ordering, spuriously
 
+// Dont need seperate Message and Event.
+// When send NodeReady, just serialize node.output once pr recipient.
 pub enum Event {
     Kill,
     AwaitNode(Arc<Node>),
@@ -58,48 +60,62 @@ pub struct Networker {
 impl Networker {
     pub fn run(&mut self) {
         let size = self.world.size();
-        for event in self.events.try_iter() {
-            // when we receve await, we need to signal it to graph.
+        //let mut outer_event = self.world.any_process().immediate_receive();
 
-            let (dst, msg) = match event {
-                Event::Kill => {
-                    for n in 0..size {
-                        self.world.process_at_rank(n).send(&Kill.serialize());
+        loop {
+            for event in self.events.try_iter() {
+                let (dst, msg) = match event {
+                    Event::Kill => {
+                        for n in 0..size {
+                            self.world.process_at_rank(n).send(&Kill.serialize());
+                        }
+                        return;
                     }
-                    return;
-                }
 
-                Event::AwaitNode(node) => (
-                    node.mpi_instance,
-                    AwaitNode {
-                        node: node.this_node,
-                    }
-                    .serialize(),
-                ),
-
-                Event::NodeReady(node, rank) => unsafe {
-                    (
-                        rank,
-                        NodeReady {
-                            data: (*node.output.get()).serialize(),
+                    Event::AwaitNode(node) => (
+                        node.mpi_instance,
+                        AwaitNode {
                             node: node.this_node,
                         }
                         .serialize(),
-                    )
-                },
-            };
+                    ),
 
-            mpi::request::scope(|scope| {
-                let _ = WaitGuard::from(
-                    self.world
-                        .process_at_rank(dst)
-                        .immediate_buffered_send(scope, &msg),
-                );
-            });
+                    Event::NodeReady(node, rank) => unsafe {
+                        (
+                            rank,
+                            NodeReady {
+                                data: (*node.output.get()).serialize(),
+                                node: node.this_node,
+                            }
+                            .serialize(),
+                        )
+                    },
+                };
+
+                mpi::request::scope(|scope| {
+                    let _ = WaitGuard::from(
+                        self.world
+                            .process_at_rank(dst)
+                            .immediate_buffered_send(scope, &msg),
+                    );
+                });
+            }
+
+            //outer_event = match outer_event.r#try() {
+            //    Ok(msg) => {
+            //        self.react_to_signal(msg);
+            //        self.world.any_process().immediate_receive()
+            //    }
+            //    Err(prev) => prev,
+            //}
         }
     }
     pub fn rank(&self) -> i32 {
         self.world.rank()
+    }
+
+    fn react_to_signal(&self, msg: (Vec<u8>, Status)) {
+        todo!()
     }
 }
 

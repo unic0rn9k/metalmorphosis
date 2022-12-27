@@ -64,6 +64,7 @@
 #![feature(test)]
 #![feature(new_uninit)]
 
+mod dummy_net;
 mod error;
 mod net;
 mod workpool;
@@ -77,14 +78,13 @@ use std::any::{type_name, Any};
 use std::cell::{RefCell, UnsafeCell};
 use std::future::Future;
 use std::marker::{PhantomData, PhantomPinned};
-use std::mem::{transmute, MaybeUninit};
+use std::mem::transmute;
 use std::pin::Pin;
-use std::ptr::{null, null_mut};
 use std::rc::Rc;
 use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool, AtomicIsize};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 use std::task::{Context, Poll, Wake};
 
 #[derive(Clone, Copy)]
@@ -132,16 +132,7 @@ impl<T: 'static> Future for OwnedSymbol<T> {
         if self.returner.done.load(Ordering::Acquire) {
             println!("task was done");
             self.reader.qued.store(-1, Ordering::Release);
-            // TODO: Replace with downcast_unchecked_ref()
-            unsafe {
-                Poll::Ready(Reader(
-                    (*self.returner.output.get())
-                        .data
-                        .downcast_ref()
-                        .expect("Tried to poll with incorrect runtime type")
-                        as *const _,
-                ))
-            }
+            unsafe { Poll::Ready(Reader((*self.returner.output.get()).ptr() as *const T)) }
         } else {
             println!("task was pending {}", self.returner.this_node);
             if self.reader.qued.load(Ordering::Acquire) == self.returner.this_node as isize {
@@ -207,6 +198,7 @@ impl Node {
         unsafe { (*self.net_events.get()).clone().expect("Network not set") }
     }
 
+    // If this was not in Node, then check associated with downcasting would not be required.
     fn output<T: 'static>(self: &Arc<Self>) -> *mut T {
         unsafe {
             (*self.output.get()).data.downcast_mut().unwrap_or_else(|| {
@@ -219,7 +211,6 @@ impl Node {
     }
 }
 
-// If you want the output to point to some manually allocated memory, it will be a lot of pointer indirections...
 pub struct Buffer {
     data: Box<dyn Any>,
     de: fn(Vec<u8>, *mut ()) -> Result<()>,
@@ -241,15 +232,18 @@ impl Buffer {
     }
 
     pub fn serialize(&self) -> Vec<u8> {
-        (self.se)(unsafe { transmute::<&dyn Any, (*const (), &())>(self.data.as_ref()).0 })
-            .expect("Buffer serialisation failed")
+        (self.se)(self.ptr()).expect("Buffer serialisation failed")
     }
 
     pub fn deserialize(&mut self, data: Vec<u8>) {
-        (self.de)(data, unsafe {
-            transmute::<&dyn Any, (*mut (), &())>(self.data.as_ref()).0
-        })
-        .unwrap()
+        (self.de)(data, self.mut_ptr()).expect("Buffer deserialization failed")
+    }
+
+    fn ptr(&self) -> *const () {
+        unsafe { transmute::<&dyn Any, (*const (), &())>(self.data.as_ref()).0 }
+    }
+    fn mut_ptr(&mut self) -> *mut () {
+        unsafe { transmute::<&mut dyn Any, (*mut (), &())>(self.data.as_mut()).0 }
     }
 }
 
@@ -493,7 +487,7 @@ impl Graph {
             "Cannot realize Graph if there exists other references to it"
         );
 
-        let (net_events, mut network) = net::instantiate(self.clone());
+        let (net_events, mut network) = dummy_net::instantiate(self.clone());
         self.pool.init(network.rank());
         for n in &self.nodes {
             n.use_net(Some(net_events.clone()));
@@ -576,7 +570,7 @@ mod test {
         type InitOutput = Symbol<f32>;
         type Output = f32;
         fn init(self, graph: &mut GraphBuilder<Self>) -> Self::InitOutput {
-            graph.set_mpi_instance(1);
+            //graph.set_mpi_instance(1);
             task!(graph, (), 2.);
             graph.this_node()
         }
