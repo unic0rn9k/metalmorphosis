@@ -19,15 +19,16 @@
 //! - [ ] return Result everywhere
 //! - [X] handle for graph with type information about the node calling it.
 //!
-//! - [ ] Executor / schedular
+//! - [X] Executor / schedular
 //!     - Wakers? (wake me up inside)
-//! - [ ] multithreaded
+//! - [X] multithreaded
 //!     - join future that works with array of symbols
 //! - [ ] Benchmark two-stage blur
 //!
 //! - [ ] Distribute (OpenMPI?)
 //!     - don't time awaits inside node
 //!     - reusing output in node would confuse executor
+//! - [ ] Simplify redundant code-paths (Graph::compute does not need to check if node is done two places, before polling children)
 //! - [ ] Benchmark distributed
 //!     - if I'm in a crunch for time, mby just make a synthetic benchmark... `thread::sleep(Duration::from_millis(10))`
 //!
@@ -261,6 +262,9 @@ pub struct GraphBuilder<T: Task + ?Sized> {
     caller: usize,
     nodes: Rc<RefCell<Vec<Node>>>,
     marker: PhantomData<T>,
+    is_leaf: bool,
+    leaf_recv: Rc<Receiver<usize>>,
+    leaf_send: Sender<usize>,
 }
 
 impl<T: Task> GraphBuilder<T> {
@@ -273,16 +277,24 @@ impl<T: Task> GraphBuilder<T> {
             caller: self.nodes.borrow().len() - 1,
             nodes: self.nodes.clone(),
             marker: PhantomData,
+            is_leaf: true,
+            leaf_recv: self.leaf_recv.clone(),
+            leaf_send: self.leaf_send.clone(),
         }
     }
 
     pub fn spawn<U: Task>(&mut self, task: U) -> U::InitOutput {
+        self.is_leaf = false;
         let len = self.nodes.borrow().len();
         self.push(Node::new::<U::Output>(len));
         self.nodes.borrow_mut()[len].name = U::name();
         println!("{}", U::name());
-        // TODO: did the child call spawn? if not, add it to a list of nodes to poll initialiy
-        task.init(&mut self.next())
+        let mut builder = self.next();
+        let ret = task.init(&mut builder);
+        if builder.is_leaf {
+            self.leaf_send.send(builder.caller).unwrap();
+        }
+        ret
     }
 
     fn drain(self) -> Vec<Arc<Node>> {
@@ -290,18 +302,23 @@ impl<T: Task> GraphBuilder<T> {
     }
 
     fn build(self) -> Arc<Graph> {
-        Graph::from_nodes(self.drain())
+        let leafs = self.leaf_recv.clone();
+        Graph::from_nodes(self.drain(), leafs)
     }
 
-    fn extends(self, graph: &Arc<Graph>) -> Arc<Graph> {
-        graph.extend(self.drain())
-    }
+    //fn extends(self, graph: &Arc<Graph>) -> Arc<Graph> {
+    //    graph.extend(self.drain())
+    //}
 
     pub fn main(task: T) -> Self {
+        let (leaf_send, leaf_recv) = channel();
         let mut entry = Self {
             caller: 0,
             nodes: Rc::new(RefCell::new(vec![])),
             marker: PhantomData,
+            leaf_recv: Rc::new(leaf_recv),
+            leaf_send,
+            is_leaf: true,
         };
         entry.spawn(task);
         entry
@@ -335,27 +352,29 @@ pub struct Graph {
     nodes: Vec<Arc<Node>>,
     _marker: PhantomPinned,
     pool: Arc<Pool>,
+    leafs: Rc<Receiver<usize>>,
     // sub_graphs: Vec<GraphSpawner>
 }
 unsafe impl Sync for Graph {}
 unsafe impl Send for Graph {}
 
 impl Graph {
-    pub fn from_nodes(nodes: Vec<Arc<Node>>) -> Arc<Self> {
+    pub fn from_nodes(nodes: Vec<Arc<Node>>, leafs: Rc<Receiver<usize>>) -> Arc<Self> {
         Arc::new_cyclic(|graph| Graph {
             nodes,
             _marker: PhantomPinned,
             pool: Pool::new(graph.clone()),
+            leafs,
         })
     }
 
-    pub fn extend(self: &Arc<Self>, nodes: Vec<Arc<Node>>) -> Arc<Self> {
-        Arc::new(Graph {
-            nodes,
-            _marker: PhantomPinned,
-            pool: self.pool.clone(),
-        })
-    }
+    //pub fn extend(self: &Arc<Self>, nodes: Vec<Arc<Node>>) -> Arc<Self> {
+    //    Arc::new(Graph {
+    //        nodes,
+    //        _marker: PhantomPinned,
+    //        pool: self.pool.clone(),
+    //    })
+    //}
 
     pub fn mpi_instance(self: &Arc<Self>) -> i32 {
         self.pool.mpi_instance()
@@ -384,42 +403,32 @@ impl Graph {
                 self.nodes[node].mpi_instance
             );
             if self.nodes[node].done.load(Ordering::Acquire) {
-                //self.pool.assign(
-                //    self.nodes[node]
-                //        .awaited_by
-                //        .try_iter()
-                //        .map(|i| self.nodes[i].clone()),
-                //);
-                //return;
-                panic!("Cycle!");
+                self.pool
+                    .assign(self.nodes[node].awaited_by.try_iter().filter_map(|i| {
+                        let reader = self.nodes[i].clone();
+                        if reader.mpi_instance == self.mpi_instance() {
+                            return Some(reader);
+                        }
+                        if !reader.is_being_polled.swap(true, Ordering::Acquire) {
+                            reader
+                                .net()
+                                .send(net::Event::NodeDone {
+                                    awaited: node,
+                                    reader: reader.this_node,
+                                })
+                                .unwrap();
+                        }
+                        None
+                    }));
+                self.nodes[node]
+                    .is_being_polled
+                    .store(false, Ordering::Release);
+                return;
             }
 
             match unsafe { Pin::new(&mut *self.nodes[node].future.get()) }.poll(&mut cx) {
                 Poll::Ready(()) => {
                     self.nodes[node].done.store(true, Ordering::Release);
-
-                    // dont clone, use arc in poll and recver
-                    self.pool
-                        .assign(self.nodes[node].awaited_by.try_iter().filter_map(|i| {
-                            let reader = self.nodes[i].clone();
-                            if reader.mpi_instance == self.mpi_instance() {
-                                return Some(reader);
-                            }
-                            if !reader.is_being_polled.swap(true, Ordering::Acquire) {
-                                reader
-                                    .net()
-                                    .send(net::Event::NodeDone {
-                                        awaited: node,
-                                        reader: reader.this_node,
-                                    })
-                                    .unwrap();
-                            }
-                            None
-                        }));
-                    self.nodes[node]
-                        .is_being_polled
-                        .store(false, Ordering::Release);
-                    return;
                 }
                 Poll::Pending => {
                     let awaited = self.nodes[node].qued.load(Ordering::Acquire);
@@ -521,7 +530,14 @@ impl Graph {
             n.use_net(Some(net_events.clone()));
             n.respawn(&self)
         }
-        self.compute(0);
+        self.pool.assign(self.leafs.iter().filter_map(|n| {
+            if self.nodes[n].mpi_instance == self.mpi_instance() {
+                println!("LEAF: {n}");
+                Some(self.nodes[n].clone())
+            } else {
+                None
+            }
+        }));
 
         network.run();
 
@@ -588,6 +604,28 @@ mod test {
     use test::black_box;
     use test::Bencher;
 
+    //struct AnonymousTask<Args, O>(
+    //    fn(&Arc<Graph>, Arc<Node>, Args) -> BoxFuture,
+    //    Args,
+    //    PhantomData<O>,
+    //);
+    //impl<Args: Sync + Send + 'static, O: Sync + Serialize + Deserialize<'static> + 'static> Task
+    //    for AnonymousTask<Args, O>
+    //{
+    //    type InitOutput = Symbol<O>;
+    //    type Output = O;
+
+    //    fn init(self, graph: &mut GraphBuilder<Self>) -> Self::InitOutput {
+    //        graph.task(Box::new(move |graph, node| {
+    //            Box::pin(async move {
+    //                let Self(task, args, _) = self;
+    //                unsafe { *node.output() = task(graph, node.clone(), args) }
+    //            })
+    //        }));
+    //        graph.this_node()
+    //    }
+    //}
+
     // # This does not need to be multithreaded...
     // metalmorphosis::test::Y::0 -> metalmorphosis::test::F::2
     // metalmorphosis::test::F::2 -> metalmorphosis::test::X::1
@@ -606,6 +644,9 @@ mod test {
 
     struct F(Symbol<f32>);
     impl Task for F {
+        // type Symbols = (Symbol<f32>);
+        // graph.lock(self.0);
+        // task!(graph, let (x) = node.own());
         type InitOutput = Symbol<f32>;
         type Output = f32;
         fn init(self, graph: &mut GraphBuilder<Self>) -> Self::InitOutput {

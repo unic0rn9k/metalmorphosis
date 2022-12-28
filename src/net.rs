@@ -50,6 +50,7 @@ impl Message {
 
 use Message::*;
 
+// TODO: Should contain clones of node.awaiter
 pub struct Networker {
     events: Receiver<Event>,
     universe: mpi::environment::Universe,
@@ -129,10 +130,19 @@ impl Networker {
     fn handle_external_event(&self, msg: Message) {
         match msg {
             Kill => panic!("Just died in your arms tonight"),
-            AwaitNode { awaited, awaiter } => println!(
-                "{} ::NET:: {awaiter} awaited {awaited}",
-                self.graph.mpi_instance()
-            ),
+            AwaitNode { awaited, awaiter } => {
+                println!(
+                    "{} ::NET:: {awaiter} awaited {awaited}",
+                    self.graph.mpi_instance()
+                );
+                let node = &self.graph.nodes[awaited];
+                while node.is_being_polled.swap(true, Ordering::Acquire) {}
+                node.awaiter.send(awaiter).unwrap();
+                if node.done.load(Ordering::Acquire) {
+                    node.is_being_polled.store(false, Ordering::Release);
+                    self.graph.pool.assign([self.graph.nodes[awaited].clone()])
+                }
+            }
             NodeReady { data, node } => {
                 println!("{} ::NET:: Some node finished", self.graph.mpi_instance())
             }
