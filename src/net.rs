@@ -1,7 +1,7 @@
 use mpi::{
     point_to_point::{ReceiveFuture, Status},
     request::WaitGuard,
-    traits::{Communicator, Destination, Equivalence, Source},
+    traits::{AsDatatype, Communicator, Destination, Equivalence, Source},
 };
 use serde_derive::{Deserialize, Serialize};
 use std::sync::{
@@ -28,14 +28,14 @@ use crate::{Graph, Node};
 // When send NodeReady, just serialize node.output once pr recipient.
 pub enum Event {
     Kill,
-    AwaitNode(Arc<Node>),
-    NodeReady(Arc<Node>, i32),
+    AwaitNode { awaited: usize, reader: usize },
+    NodeDone { awaited: usize, reader: usize },
 }
 
 #[derive(Serialize, Deserialize)]
 pub enum Message {
     Kill,
-    AwaitNode { node: usize },
+    AwaitNode { awaited: usize, awaiter: usize },
     NodeReady { data: Vec<u8>, node: usize },
 }
 
@@ -43,8 +43,8 @@ impl Message {
     fn serialize(&self) -> Vec<u8> {
         bincode::serialize(&self).unwrap()
     }
-    fn deserialize(data: Vec<u8>) -> Self {
-        bincode::deserialize(&data).expect("Failed to deserialize network event")
+    fn deserialize(data: &[u8]) -> Self {
+        bincode::deserialize(data).expect("Failed to deserialize network event")
     }
 }
 
@@ -60,62 +60,83 @@ pub struct Networker {
 impl Networker {
     pub fn run(&mut self) {
         let size = self.world.size();
-        //let mut outer_event = self.world.any_process().immediate_receive();
-
         loop {
-            for event in self.events.try_iter() {
-                let (dst, msg) = match event {
-                    Event::Kill => {
-                        for n in 0..size {
-                            self.world.process_at_rank(n).send(&Kill.serialize());
-                        }
-                        return;
+            let mut buffer = [0u8; 1024];
+            let kill_network = mpi::request::scope(|scope| {
+                let mut external_event = self
+                    .world
+                    .any_process()
+                    .immediate_receive_into(scope, &mut buffer);
+
+                loop {
+                    for internal_event in self.events.try_iter() {
+                        let (dst, msg) = match internal_event {
+                            Event::Kill => {
+                                for n in 0..size {
+                                    self.world.process_at_rank(n).send(&Kill.serialize());
+                                }
+                                return true;
+                            }
+
+                            Event::AwaitNode {
+                                awaited,
+                                reader: awaiter,
+                            } => (
+                                self.graph.nodes[awaited].mpi_instance,
+                                AwaitNode { awaited, awaiter }.serialize(),
+                            ),
+
+                            Event::NodeDone { awaited, reader } => unsafe {
+                                let node = &self.graph.nodes[awaited];
+                                (
+                                    self.graph.nodes[reader].mpi_instance,
+                                    NodeReady {
+                                        data: (*node.output.get()).serialize(),
+                                        node: node.this_node,
+                                    }
+                                    .serialize(),
+                                )
+                            },
+                        };
+
+                        mpi::request::scope(|scope| {
+                            let _ = WaitGuard::from(
+                                self.world.process_at_rank(dst).immediate_send(scope, &msg),
+                            );
+                        });
                     }
 
-                    Event::AwaitNode(node) => (
-                        node.mpi_instance,
-                        AwaitNode {
-                            node: node.this_node,
+                    external_event = match external_event.test_with_data() {
+                        Ok((msg, data)) => {
+                            let bytes = msg.count(data.as_datatype()) as usize;
+                            let sender = msg.source_rank();
+                            self.handle_external_event(Message::deserialize(&data[0..bytes]));
+                            return false;
                         }
-                        .serialize(),
-                    ),
-
-                    Event::NodeReady(node, rank) => unsafe {
-                        (
-                            rank,
-                            NodeReady {
-                                data: (*node.output.get()).serialize(),
-                                node: node.this_node,
-                            }
-                            .serialize(),
-                        )
-                    },
-                };
-
-                mpi::request::scope(|scope| {
-                    let _ = WaitGuard::from(
-                        self.world
-                            .process_at_rank(dst)
-                            .immediate_buffered_send(scope, &msg),
-                    );
-                });
-            }
-
-            //outer_event = match outer_event.r#try() {
-            //    Ok(msg) => {
-            //        self.react_to_signal(msg);
-            //        self.world.any_process().immediate_receive()
-            //    }
-            //    Err(prev) => prev,
-            //}
+                        Err(same) => same,
+                    }
+                }
+            });
+            if kill_network {
+                return;
+            };
         }
     }
     pub fn rank(&self) -> i32 {
         self.world.rank()
     }
 
-    fn react_to_signal(&self, msg: (Vec<u8>, Status)) {
-        todo!()
+    fn handle_external_event(&self, msg: Message) {
+        match msg {
+            Kill => panic!("Just died in your arms tonight"),
+            AwaitNode { awaited, awaiter } => println!(
+                "{} ::NET:: {awaiter} awaited {awaited}",
+                self.graph.mpi_instance()
+            ),
+            NodeReady { data, node } => {
+                println!("{} ::NET:: Some node finished", self.graph.mpi_instance())
+            }
+        }
     }
 }
 

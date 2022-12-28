@@ -146,7 +146,7 @@ impl Pool {
         }
     }
 
-    fn mpi_instance(&self) -> i32 {
+    pub fn mpi_instance(&self) -> i32 {
         unsafe { *self.mpi_instance.get() }
     }
 
@@ -159,12 +159,12 @@ impl Pool {
             if task.is_being_polled.swap(true, Ordering::Acquire) {
                 continue;
             }
-            if task.mpi_instance != self.mpi_instance() {
-                task.net()
-                    .send(net::Event::AwaitNode(task.clone()))
-                    .unwrap();
-                continue;
-            }
+            //if task.mpi_instance != self.mpi_instance() {
+            //    task.net()
+            //        .send(net::Event::AwaitNode(task.clone()))
+            //        .unwrap();
+            //    continue;
+            //}
 
             let device = occupancy.pop(self);
             if let Some(device) = device {

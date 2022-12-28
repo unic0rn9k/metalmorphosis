@@ -335,7 +335,6 @@ pub struct Graph {
     nodes: Vec<Arc<Node>>,
     _marker: PhantomPinned,
     pool: Arc<Pool>,
-    mpi_instance: i32,
     // sub_graphs: Vec<GraphSpawner>
 }
 unsafe impl Sync for Graph {}
@@ -344,7 +343,6 @@ unsafe impl Send for Graph {}
 impl Graph {
     pub fn from_nodes(nodes: Vec<Arc<Node>>) -> Arc<Self> {
         Arc::new_cyclic(|graph| Graph {
-            mpi_instance: 0,
             nodes,
             _marker: PhantomPinned,
             pool: Pool::new(graph.clone()),
@@ -353,11 +351,14 @@ impl Graph {
 
     pub fn extend(self: &Arc<Self>, nodes: Vec<Arc<Node>>) -> Arc<Self> {
         Arc::new(Graph {
-            mpi_instance: self.mpi_instance,
             nodes,
             _marker: PhantomPinned,
             pool: self.pool.clone(),
         })
+    }
+
+    pub fn mpi_instance(self: &Arc<Self>) -> i32 {
+        self.pool.mpi_instance()
     }
 
     pub fn compute(self: &Arc<Self>, mut node: usize) {
@@ -367,25 +368,30 @@ impl Graph {
         // We should return at some point with a Poll<()>
 
         loop {
-            if self.nodes[node].mpi_instance != self.mpi_instance {
-                self.nodes[node]
-                    .net()
-                    .send(net::Event::AwaitNode(self.nodes[node].clone()))
-                    .unwrap();
+            if self.nodes[node].mpi_instance != self.mpi_instance() {
+                println!("cannot comput {} on {}", node, self.mpi_instance());
                 return;
             }
+            //if self.nodes[node].mpi_instance != self.mpi_instance {
+            //    self.nodes[node]
+            //        .net()
+            //        .send(net::Event::AwaitNode(self.nodes[node].clone()))
+            //        .unwrap();
+            //    return;
+            //}
             println!(
                 "compputing: {node} on mpi instance {}",
                 self.nodes[node].mpi_instance
             );
             if self.nodes[node].done.load(Ordering::Acquire) {
-                self.pool.assign(
-                    self.nodes[node]
-                        .awaited_by
-                        .try_iter()
-                        .map(|i| self.nodes[i].clone()),
-                );
-                return;
+                //self.pool.assign(
+                //    self.nodes[node]
+                //        .awaited_by
+                //        .try_iter()
+                //        .map(|i| self.nodes[i].clone()),
+                //);
+                //return;
+                panic!("Cycle!");
             }
 
             match unsafe { Pin::new(&mut *self.nodes[node].future.get()) }.poll(&mut cx) {
@@ -393,25 +399,47 @@ impl Graph {
                     self.nodes[node].done.store(true, Ordering::Release);
 
                     // dont clone, use arc in poll and recver
-                    self.pool.assign(
-                        self.nodes[node]
-                            .awaited_by
-                            .try_iter()
-                            .map(|i| self.nodes[i].clone()),
-                    );
+                    self.pool
+                        .assign(self.nodes[node].awaited_by.try_iter().filter_map(|i| {
+                            let reader = self.nodes[i].clone();
+                            if reader.mpi_instance == self.mpi_instance() {
+                                return Some(reader);
+                            }
+                            if !reader.is_being_polled.swap(true, Ordering::Acquire) {
+                                reader
+                                    .net()
+                                    .send(net::Event::NodeDone {
+                                        awaited: node,
+                                        reader: reader.this_node,
+                                    })
+                                    .unwrap();
+                            }
+                            None
+                        }));
                     self.nodes[node]
                         .is_being_polled
                         .store(false, Ordering::Release);
                     return;
                 }
                 Poll::Pending => {
-                    let awaiting = self.nodes[node].qued.load(Ordering::Acquire);
-                    self.nodes[node]
-                        .is_being_polled
-                        .store(false, Ordering::Release);
+                    let awaited = self.nodes[node].qued.load(Ordering::Acquire);
+                    if awaited >= 0 {
+                        let awaited = awaited as usize;
+                        if self.nodes[awaited].mpi_instance != self.mpi_instance() {
+                            self.nodes[node]
+                                .net()
+                                .send(net::Event::AwaitNode {
+                                    awaited,
+                                    reader: node,
+                                })
+                                .unwrap();
+                            return;
+                        }
+                        self.nodes[node]
+                            .is_being_polled
+                            .store(false, Ordering::Release);
 
-                    if awaiting >= 0 {
-                        node = awaiting as usize
+                        node = awaited
                     } else {
                         panic!("Pending nothing?");
                     }
@@ -487,7 +515,7 @@ impl Graph {
             "Cannot realize Graph if there exists other references to it"
         );
 
-        let (net_events, mut network) = dummy_net::instantiate(self.clone());
+        let (net_events, mut network) = net::instantiate(self.clone());
         self.pool.init(network.rank());
         for n in &self.nodes {
             n.use_net(Some(net_events.clone()));
@@ -570,7 +598,7 @@ mod test {
         type InitOutput = Symbol<f32>;
         type Output = f32;
         fn init(self, graph: &mut GraphBuilder<Self>) -> Self::InitOutput {
-            //graph.set_mpi_instance(1);
+            graph.set_mpi_instance(1);
             task!(graph, (), 2.);
             graph.this_node()
         }
