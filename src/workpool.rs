@@ -154,9 +154,8 @@ impl Pool {
     pub fn assign(self: &Arc<Self>, task: impl IntoIterator<Item = Arc<Node>>) {
         let mut occupancy = lock(&self.last_unoccupied);
         for task in task {
-            println!("Assigning task");
-
             if task.is_being_polled.swap(true, Ordering::Acquire) {
+                println!("  already being polled");
                 continue;
             }
             //if task.mpi_instance != self.mpi_instance() {

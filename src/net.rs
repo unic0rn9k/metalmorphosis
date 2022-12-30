@@ -1,6 +1,6 @@
 use mpi::{
     point_to_point::{ReceiveFuture, Status},
-    request::WaitGuard,
+    request::{CancelGuard, WaitGuard},
     traits::{AsDatatype, Communicator, Destination, Equivalence, Source},
 };
 use serde_derive::{Deserialize, Serialize};
@@ -51,6 +51,7 @@ impl Message {
 use Message::*;
 
 // TODO: Should contain clones of node.awaiter
+//       Also make sure awaiters aren't cloned in parallel
 pub struct Networker {
     events: Receiver<Event>,
     universe: mpi::environment::Universe,
@@ -59,7 +60,7 @@ pub struct Networker {
 }
 
 impl Networker {
-    pub fn run(&mut self) {
+    pub fn run(self) -> Receiver<Event> {
         let size = self.world.size();
         loop {
             let mut buffer = [0u8; 1024];
@@ -70,12 +71,13 @@ impl Networker {
                     .immediate_receive_into(scope, &mut buffer);
 
                 loop {
-                    for internal_event in self.events.try_iter() {
+                    if let Ok(internal_event) = self.events.try_recv() {
                         let (dst, msg) = match internal_event {
                             Event::Kill => {
                                 for n in 0..size {
                                     self.world.process_at_rank(n).send(&Kill.serialize());
                                 }
+                                external_event.wait_without_status();
                                 return true;
                             }
 
@@ -110,16 +112,15 @@ impl Networker {
                     external_event = match external_event.test_with_data() {
                         Ok((msg, data)) => {
                             let bytes = msg.count(data.as_datatype()) as usize;
-                            let sender = msg.source_rank();
-                            self.handle_external_event(Message::deserialize(&data[0..bytes]));
-                            return false;
+                            return self
+                                .handle_external_event(Message::deserialize(&data[0..bytes]));
                         }
                         Err(same) => same,
                     }
                 }
             });
             if kill_network {
-                return;
+                return self.events;
             };
         }
     }
@@ -127,26 +128,48 @@ impl Networker {
         self.world.rank()
     }
 
-    fn handle_external_event(&self, msg: Message) {
+    fn handle_external_event(&self, msg: Message) -> bool {
         match msg {
-            Kill => panic!("Just died in your arms tonight"),
+            Kill => return true,
             AwaitNode { awaited, awaiter } => {
                 println!(
-                    "{} ::NET:: {awaiter} awaited {awaited}",
-                    self.graph.mpi_instance()
+                    "{} ::NET:: {} awaited {}",
+                    self.graph.mpi_instance(),
+                    self.graph.nodes[awaiter].name,
+                    self.graph.nodes[awaited].name,
                 );
                 let node = &self.graph.nodes[awaited];
+
                 while node.is_being_polled.swap(true, Ordering::Acquire) {}
+                // FIXME: Awaiter gets polled in assign bellow,
+                //        which runs this again, thus infinite loop.
+                //        (node = awaited)
                 node.awaiter.send(awaiter).unwrap();
+                node.is_being_polled.store(false, Ordering::Release);
+
                 if node.done.load(Ordering::Acquire) {
-                    node.is_being_polled.store(false, Ordering::Release);
                     self.graph.pool.assign([self.graph.nodes[awaited].clone()])
                 }
             }
             NodeReady { data, node } => {
-                println!("{} ::NET:: Some node finished", self.graph.mpi_instance())
+                let node = self.graph.nodes[node].clone();
+                if node.is_being_polled.swap(true, Ordering::Acquire) {
+                    panic!("NodeReady event for in-use node: {}", node.name);
+                }
+
+                node.done.store(true, Ordering::Release);
+                unsafe { (*node.output.get()).deserialize(data) }
+
+                self.graph.print();
+                self.graph.compute(node.this_node);
+                println!(
+                    "{} ::NET:: node {} ready",
+                    self.graph.mpi_instance(),
+                    node.name
+                );
             }
         }
+        false
     }
 }
 

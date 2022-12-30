@@ -98,10 +98,12 @@ pub struct LockedSymbol<T> {
 }
 impl<T> LockedSymbol<T> {
     fn own(self, graph: &Arc<Graph>) -> OwnedSymbol<T> {
+        let que = graph.nodes[self.returner].awaiter.clone();
+        //que.send(self.reader).unwrap();
         OwnedSymbol {
             returner: graph.nodes[self.returner].clone(),
             reader: graph.nodes[self.reader].clone(),
-            que: graph.nodes[self.returner].awaiter.clone(),
+            que,
             marker: PhantomData,
         }
     }
@@ -151,19 +153,20 @@ impl<T: 'static> Future for OwnedSymbol<T> {
 pub type BoxFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 pub type AsyncFunction = Box<dyn Fn(&Arc<Graph>, Arc<Node>) -> BoxFuture>;
 
+// Node could be split into two structs. One for everything that needs unsafe interior mutability. And one for the other stuff.
 pub struct Node {
     name: &'static str,
     task: AsyncFunction,
-    future: UnsafeCell<BoxFuture>,
-    qued: AtomicIsize, // This is just a Waker...
-    awaited_by: Receiver<usize>,
-    awaiter: Sender<usize>,
+    future: UnsafeCell<BoxFuture>, // X
+    qued: AtomicIsize,             // This is just a Waker...
+    awaited_by: Receiver<usize>,   // X
+    awaiter: Sender<usize>,        // X
     this_node: usize,
     output: UnsafeCell<Buffer>,
     done: AtomicBool,
     is_being_polled: AtomicBool,
     mpi_instance: i32,
-    net_events: UnsafeCell<Option<Sender<net::Event>>>,
+    net_events: UnsafeCell<Option<Sender<net::Event>>>, // X
 }
 unsafe impl Send for Node {}
 unsafe impl Sync for Node {}
@@ -265,6 +268,7 @@ pub struct GraphBuilder<T: Task + ?Sized> {
     is_leaf: bool,
     leaf_recv: Rc<Receiver<usize>>,
     leaf_send: Sender<usize>,
+    awaits: Vec<usize>,
 }
 
 impl<T: Task> GraphBuilder<T> {
@@ -280,6 +284,7 @@ impl<T: Task> GraphBuilder<T> {
             is_leaf: true,
             leaf_recv: self.leaf_recv.clone(),
             leaf_send: self.leaf_send.clone(),
+            awaits: vec![],
         }
     }
 
@@ -291,8 +296,17 @@ impl<T: Task> GraphBuilder<T> {
         println!("{}", U::name());
         let mut builder = self.next();
         let ret = task.init(&mut builder);
+
         if builder.is_leaf {
             self.leaf_send.send(builder.caller).unwrap();
+        } else {
+            println!("NOT_LEAF: {} <- {:?}", self.caller, builder.awaits);
+            for awaits in &builder.awaits {
+                self.nodes.borrow_mut()[*awaits]
+                    .awaiter
+                    .send(self.caller)
+                    .unwrap();
+            }
         }
         ret
     }
@@ -319,6 +333,7 @@ impl<T: Task> GraphBuilder<T> {
             leaf_recv: Rc::new(leaf_recv),
             leaf_send,
             is_leaf: true,
+            awaits: vec![],
         };
         entry.spawn(task);
         entry
@@ -332,7 +347,8 @@ impl<T: Task> GraphBuilder<T> {
         Symbol(self.caller, PhantomData)
     }
 
-    pub fn lock_symbol<U>(&self, s: Symbol<U>) -> LockedSymbol<U> {
+    pub fn lock_symbol<U>(&mut self, s: Symbol<U>) -> LockedSymbol<U> {
+        self.awaits.push(s.0);
         LockedSymbol {
             returner: s.0,
             reader: self.caller,
@@ -380,6 +396,7 @@ impl Graph {
         self.pool.mpi_instance()
     }
 
+    // Should only be called from Pool::assign
     pub fn compute(self: &Arc<Self>, mut node: usize) {
         let waker = Arc::new(NilWaker).into();
         let mut cx = Context::from_waker(&waker);
@@ -387,10 +404,6 @@ impl Graph {
         // We should return at some point with a Poll<()>
 
         loop {
-            if self.nodes[node].mpi_instance != self.mpi_instance() {
-                println!("cannot comput {} on {}", node, self.mpi_instance());
-                return;
-            }
             //if self.nodes[node].mpi_instance != self.mpi_instance {
             //    self.nodes[node]
             //        .net()
@@ -399,25 +412,34 @@ impl Graph {
             //    return;
             //}
             println!(
-                "compputing: {node} on mpi instance {}",
-                self.nodes[node].mpi_instance
+                "{} compputing {}",
+                self.nodes[node].mpi_instance, self.nodes[node].name
             );
             if self.nodes[node].done.load(Ordering::Acquire) {
+                println!(
+                    "{} already done {}",
+                    self.mpi_instance(),
+                    self.nodes[node].name
+                );
                 self.pool
                     .assign(self.nodes[node].awaited_by.try_iter().filter_map(|i| {
                         let reader = self.nodes[i].clone();
                         if reader.mpi_instance == self.mpi_instance() {
                             return Some(reader);
                         }
-                        if !reader.is_being_polled.swap(true, Ordering::Acquire) {
-                            reader
-                                .net()
-                                .send(net::Event::NodeDone {
-                                    awaited: node,
-                                    reader: reader.this_node,
-                                })
-                                .unwrap();
-                        }
+                        //if !reader.is_being_polled.swap(true, Ordering::Acquire) {
+                        reader
+                            .net()
+                            .send(net::Event::NodeDone {
+                                awaited: node,
+                                reader: reader.this_node,
+                            })
+                            .unwrap();
+                        //    self.nodes[node].awaiter.send(reader.this_node).unwrap();
+                        //    reader.is_being_polled.store(false, Ordering::Release);
+                        //} else {
+                        //    panic!("Unable to get ownership, for cross machine await")
+                        //}
                         None
                     }));
                 self.nodes[node]
@@ -426,9 +448,17 @@ impl Graph {
                 return;
             }
 
+            if self.nodes[node].mpi_instance != self.mpi_instance() {
+                return;
+            }
+
             match unsafe { Pin::new(&mut *self.nodes[node].future.get()) }.poll(&mut cx) {
                 Poll::Ready(()) => {
+                    if node == 0 {
+                        self.nodes[node].net().send(net::Event::Kill).unwrap()
+                    }
                     self.nodes[node].done.store(true, Ordering::Release);
+                    continue;
                 }
                 Poll::Pending => {
                     let awaited = self.nodes[node].qued.load(Ordering::Acquire);
@@ -456,49 +486,17 @@ impl Graph {
             }
         }
     }
+    // # Better scheduler
+    // ## Init
+    // all nodes contain sender to shared que of tasks to be polled. (why cant it just be all threads?)
+    // leaf nodes are sendt to shared que.
+    //
+    // ## Realize
+    // Nodes from shared que are polled.
+    // when parent returns pending, child is sendt to que.
+    // quen and networking in loop.
 
     pub fn realize(self: Arc<Self>) {
-        // Graph realization does a topological sort,
-        // where the 'Graph' is just an in-degree array.
-        // Rc is the count of outgoing edges tho...
-        //
-        // Forks are stupid. If we keep track of incomming edges,
-        // we can do topological sort.
-        // This way we can always run all nodes that have no unresolved incomming edges in parralel.
-        //
-        // Nodes might be able to do computation before all incomming edges have been satisfied.
-        // Nodes will only pend if they are awaiting other nodes,
-        // so this can be solved by just polling all nodes iteratively, once when graph is realized.
-        //
-        // Realize computation flow:
-        // - Poll all nodes, while collecting que of nodes that have 0 unresolved incomming edges.
-        // - Poll all nodes in que on workpool.
-        // - Collect all unresloved nodes that have 0 incomming edges into que.
-        // - if que is empty:
-        //      - if there are unresolved nodes: Graph contained cycle
-        //      - else program is done
-        // - Try to poll from que again
-        //      - any time we get to this point, it means we missed an opertunity to poll a child.
-        //        this is bad for performance. Log it!
-        // Worker computation flow:
-        // - Poll node.
-        // - imediatly poll children that where awaiting this node.
-        // - if there are multiple children:
-        //      - this is where i was going to do 'forks'
-        //
-        // # Possible solution to forks
-        // Each node has a que of pending children.
-        // pool has a global que of nodes that could not find workers.
-        // pool has a count of unoccupied workers.
-        // When node has been resolved: Loop over pending children:
-        // - If there are workers left: assign child to worker.
-        // - else push the child to the global pool que.
-        //
-        // If a node has an incorrect incomming edge,
-        // either it, or the parent, should be added to executor que.
-        //
-        // Just to be sure. Print if there are still unfinished nodes left before killing.
-        //
         // It might be easyest/ a good solution, to find a distribution of tasks when initializing the graf,
         // and then improving the distribution at runtime. This could be achived with 'execution masks'.
         // Then if we make the graf queriable, and so that user can mutate the distribution mask manually,
@@ -524,13 +522,16 @@ impl Graph {
             "Cannot realize Graph if there exists other references to it"
         );
 
-        let (net_events, mut network) = net::instantiate(self.clone());
+        let (net_events, network) = net::instantiate(self.clone());
         self.pool.init(network.rank());
         for n in &self.nodes {
             n.use_net(Some(net_events.clone()));
             n.respawn(&self)
         }
         self.pool.assign(self.leafs.iter().filter_map(|n| {
+            // FIXME: Initialy push children to leaf_node.awaiter
+            // TODO:  If there are devices left, after assigning leaf nodes.
+            //        Then start assigning children.
             if self.nodes[n].mpi_instance == self.mpi_instance() {
                 println!("LEAF: {n}");
                 Some(self.nodes[n].clone())
@@ -539,9 +540,9 @@ impl Graph {
             }
         }));
 
-        network.run();
-
+        let hold_on = network.run();
         self.pool.finish();
+        drop(hold_on);
         match Arc::try_unwrap(self) {
             Ok(this) => this.pool.kill(),
             Err(s) => panic!("fuck {}", Arc::strong_count(&s)),
@@ -549,8 +550,23 @@ impl Graph {
     }
 
     pub fn print(&self) {
-        for n in 0..self.nodes.len() {
-            println!("{n} has {:?} refs", Arc::strong_count(&self.nodes[n]));
+        for node in &self.nodes {
+            //if node.is_being_polled.swap(true, Ordering::Acquire) {
+            //    println!("{} -> {} is being polled", node.mpi_instance, node.name);
+            //    return;
+            //}
+            let mut awaiters = vec![];
+            for n in node.awaited_by.try_iter() {
+                awaiters.push((n, self.nodes[n].name));
+            }
+            for (n, _) in &awaiters {
+                node.awaiter.send(*n).unwrap();
+            }
+            println!(
+                "{} -> {} awaited by {:?}",
+                node.mpi_instance, node.name, awaiters
+            );
+            node.is_being_polled.store(false, Ordering::Release);
         }
     }
 }
