@@ -7,7 +7,7 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use crate::{error::Result, net, Graph, Node};
+use crate::{error::Result, net, Graph, Node, DEBUG};
 
 mod locked_occupancy;
 use locked_occupancy::*;
@@ -155,7 +155,9 @@ impl Pool {
         let mut occupancy = lock(&self.last_unoccupied);
         for task in task {
             if task.is_being_polled.swap(true, Ordering::Acquire) {
-                println!("  already being polled");
+                if DEBUG {
+                    println!("  already being polled")
+                };
                 continue;
             }
             //if task.mpi_instance != self.mpi_instance() {

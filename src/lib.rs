@@ -16,21 +16,30 @@
 //! - [X] Buffers
 //! - [X] impl Future for Symbol
 //!
-//! - [ ] return Result everywhere
 //! - [X] handle for graph with type information about the node calling it.
 //!
 //! - [X] Executor / schedular
 //!     - Wakers? (wake me up inside)
 //! - [X] multithreaded
 //!     - join future that works with array of symbols
-//! - [ ] Benchmark two-stage blur
 //!
-//! - [ ] Distribute (OpenMPI?)
+//! - [X] Distribute (OpenMPI?)
 //!     - don't time awaits inside node
 //!     - reusing output in node would confuse executor
-//! - [ ] Simplify redundant code-paths (Graph::compute does not need to check if node is done two places, before polling children)
-//! - [ ] Benchmark distributed
-//!     - if I'm in a crunch for time, mby just make a synthetic benchmark... `thread::sleep(Duration::from_millis(10))`
+//!
+//! - [ ] clean code (remove duplicate work)
+//! - [ ] stack-que for missed work
+//! - [ ] nicer API (ATLEAST for custom schedular)
+//! - [ ] sending directly on node.awaiter is ugly (also make sure they aren't cloned in parallel)
+//! - [ ] return Result everywhere
+//!
+//! - [ ] priority que.
+//!     - Let users set priority
+//!     - increase priority of awaited children
+//!     - internal events as tasks
+//!
+//! - [ ] Benchmarks and tests
+//!     - TRAVLT? just make a synthetic benchmark... `thread::sleep(Duration::from_millis(10))`
 //!
 //! ## Extra
 //! - Anchored nodes (so that 0 isnt special. Then executor makes sure anchored nodes are done before kill)
@@ -43,9 +52,7 @@
 //! - Optional stack trace (basically already implemented this)
 //! - Check for cycles when building graph
 //! - Multiple backends for providing tasks (eg: shared object files, cranelift, fancy jit / hot-reloading)
-
-// bunch of stuff: https://play.rust-lang.org/?version=stable&mode=debug&edition=2021&gist=778be5ba4d57087abc788b5901bd780d
-// some dyn shit: https://play.rust-lang.org/?version=stable&mode=debug&edition=2021&code=use%20std%3A%3Aany%3A%3ATypeId%3B%0A%0Astruct%20Symbol%3CT%3E(usize%2C%20PhantomData%3CT%3E)%3B%0A%0Astruct%20Node%3COutput%3E%7B%0A%20%20%20%20this_node%3A%20usize%2C%0A%20%20%20%20readers%3A%20Vec%3Cusize%3E%2C%0A%20%20%20%20output%3A%20Output%2C%0A%7D%0A%0Atrait%20Trace%7B%0A%20%20%20%20fn%20this_node(%26self)%20-%3E%20usize%3B%0A%20%20%20%20fn%20readers(%26self)%20-%3E%20Vec%3Cusize%3E%3B%0A%20%20%20%20fn%20output_type(%26self)%20-%3E%20TypeId%3B%0A%20%20%20%20%0A%20%20%20%20fn%20read%3CT%3E(%26mut%20self%2C%20name%3A%20%26str)%20-%3E%20Symbol%3CT%3E%7B%0A%20%20%20%20%20%20%20%20todo!()%3B%0A%20%20%20%20%7D%0A%7D%0A%0Astruct%20Graph%7B%0A%20%20%20%20nodes%3A%20Vec%3CBox%3Cdyn%20Trace%3E%3E%2C%0A%20%20%20%20is_locked%3A%20bool%2C%20%2F%2F%20any%20nodes%20spawned%20after%20is%20lock%20is%20set%2C%20will%20not%20be%20distributable%0A%7D%0A%0Astruct%20MainNode(*mut%20Graph)%3B%0A%0A%2F*%0Afn%20main()%7B%0A%20%20%20%20Graph%3A%3Anew().main(%7Cm%3A%20MainNode%7C%7B%0A%20%20%20%20%20%20%20%20m.spawn(%22x%22%2C%20Literal(2.3)%2C%20%5B%5D)%3B%0A%20%20%20%20%20%20%20%20m.spawn(%22y%22%2C%20Y%2C%20%5B%22x%22%5D)%3B%0A%20%20%20%20%20%20%20%20m.subgraph(%22mm%22%2C%20matmul)%3B%0A%20%20%20%20%20%20%20%20%2F%2F%20%22mm%22%20can%20only%20be%20a%20matmul%20graph%20tho.%20Not%20necessary%20if%20you%20can%20read%20nodes%20that%20have%20not%20been%20spawned%20yet.%0A%20%20%20%20%20%20%20%20%0A%20%20%20%20%20%20%20%20let%20y%20%3D%20m.read%3A%3A%3Cf32%3E(%22y%22)%3B%0A%20%20%20%20%20%20%20%20let%20x%20%3D%20m.read%3A%3A%3Cf32%3E(%22x%22)%3B%0A%20%20%20%20%20%20%20%20%0A%20%20%20%20%20%20%20%20async%20%7B%0A%20%20%20%20%20%20%20%20%20%20%20%20%2F%2F%20%60for%20n%20in%200..x.next().await%60%20cannot%20be%20concistently%20optimized%0A%20%20%20%20%20%20%20%20%20%20%20%20%2F%2F%20mby%3A%20%60executor.hint(ScalesWith(%7Cs%7C%20s%20*%20x))%60%0A%20%20%20%20%20%20%20%20%20%20%20%20for%20n%20in%200..10%7B%0A%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20let%20y%3A%20f32%20%3D%20y.next().await%3B%0A%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20let%20x%3A%20f32%20%3D%20x.next().await%3B%0A%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20%20println!(%22%7Bn%7D%3A%20f(%7Bx%7D)%20%3D%20%7By%7D%22)%3B%0A%20%20%20%20%20%20%20%20%20%20%20%20%7D%0A%20%20%20%20%20%20%20%20%20%20%20%20%0A%20%20%20%20%20%20%20%20%20%20%20%20%2F%2F%20Here%20the%20graph%20of%20%22mm%22%20can%20vary%20based%20on%20arguments%20that%20are%20computed%20inside%20async%20block!%0A%20%20%20%20%20%20%20%20%20%20%20%20m.init(%22mm%22%2C%20(10%2C%2010))%3B%0A%20%20%20%20%20%20%20%20%20%20%20%20%2F%2F%20%5E%5E%20Serialize%20and%20send%20arguments%20for%20initializing%20%22mm%22%20to%20all%20devices.%0A%20%20%20%20%20%20%20%20%20%20%20%20%2F%2F%20Initializing%20graph%20needs%20to%20be%20pure.%0A%20%20%20%20%20%20%20%20%7D%0A%20%20%20%20%7D)%0A%7D*%2F%0A%0A%0Atrait%20Symbolize%3CT%3E%7B%0A%20%20%20%20fn%20symbol(%26self)%20-%3E%20Symbol%3CT%3E%3B%20%20%20%20%0A%7D%0A%0A%0Aimpl%3CT%3E%20Symbolize%3CT%3E%20for%20Node%3CT%3E%7B%0A%20%20%20%20fn%20symbol(%26self)%20-%3E%20Symbol%3CT%3E%7B%0A%20%20%20%20%20%20%20%20Symbol(self.this_node)%0A%20%20%20%20%7D%0A%7D%0A%0A
+//! - specialized optimisations based on graph structure, when initilizing (fx: combine multiple nodes, that only have a signle parent, into one node)
 
 // # Schedular
 // If task returns pending, poll node in sources,
@@ -88,6 +95,8 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use std::task::{Context, Poll, Wake};
 
+const DEBUG: bool = true;
+
 #[derive(Clone, Copy)]
 pub struct Symbol<T>(usize, PhantomData<T>);
 #[derive(Clone, Copy)]
@@ -128,21 +137,27 @@ impl<T: 'static> Future for OwnedSymbol<T> {
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
-        println!(
-            "polling: {:?} for {:?}",
-            self.returner.this_node, self.reader.this_node,
-        );
+        if DEBUG {
+            println!(
+                "polling: {:?} for {:?}",
+                self.returner.this_node, self.reader.this_node,
+            )
+        };
         if self.returner.done.load(Ordering::Acquire) {
-            println!("task was done");
-            self.reader.qued.store(-1, Ordering::Release);
+            if DEBUG {
+                println!("task was done")
+            };
+            self.reader.continue_to.store(-1, Ordering::Release);
             unsafe { Poll::Ready(Reader((*self.returner.output.get()).ptr() as *const T)) }
         } else {
-            println!("task was pending {}", self.returner.this_node);
-            if self.reader.qued.load(Ordering::Acquire) == self.returner.this_node as isize {
+            if DEBUG {
+                println!("task was pending {}", self.returner.this_node)
+            };
+            if self.reader.continue_to.load(Ordering::Acquire) == self.returner.this_node as isize {
                 return Poll::Pending;
             }
             self.reader
-                .qued
+                .continue_to
                 .store(self.returner.this_node as isize, Ordering::Release);
             self.que.send(self.reader.this_node).unwrap();
             Poll::Pending
@@ -158,7 +173,7 @@ pub struct Node {
     name: &'static str,
     task: AsyncFunction,
     future: UnsafeCell<BoxFuture>, // X
-    qued: AtomicIsize,             // This is just a Waker...
+    continue_to: AtomicIsize,      // This is just a Waker...
     awaited_by: Receiver<usize>,   // X
     awaiter: Sender<usize>,        // X
     this_node: usize,
@@ -178,7 +193,7 @@ impl Node {
             name: "NIL",
             task: Box::new(|_, _| Box::pin(async {})),
             future: UnsafeCell::new(Box::pin(async {})),
-            qued: AtomicIsize::new(-1),
+            continue_to: AtomicIsize::new(-1),
             awaited_by,
             awaiter,
             this_node,
@@ -217,7 +232,7 @@ impl Node {
 
 pub struct Buffer {
     data: Box<dyn Any>,
-    de: fn(Vec<u8>, *mut ()) -> Result<()>,
+    de: fn(&[u8], *mut ()) -> Result<()>,
     se: fn(*const ()) -> Result<Vec<u8>>,
 }
 
@@ -227,7 +242,7 @@ impl Buffer {
             Buffer {
                 data: Box::<T>::new_uninit().assume_init(),
                 de: |b, out| {
-                    *(out as *mut T) = bincode::deserialize(transmute(&b[..]))?;
+                    *(out as *mut T) = bincode::deserialize(transmute(b))?;
                     Ok(())
                 },
                 se: |v| Ok(bincode::serialize::<T>(&*(v as *const T))?),
@@ -236,10 +251,10 @@ impl Buffer {
     }
 
     pub fn serialize(&self) -> Vec<u8> {
-        (self.se)(self.ptr()).expect("Buffer serialisation failed")
+        (self.se)(self.ptr()).expect("Buffer serialization failed")
     }
 
-    pub fn deserialize(&mut self, data: Vec<u8>) {
+    pub fn deserialize(&mut self, data: &[u8]) {
         (self.de)(data, self.mut_ptr()).expect("Buffer deserialization failed")
     }
 
@@ -250,16 +265,6 @@ impl Buffer {
         unsafe { transmute::<&mut dyn Any, (*mut (), &())>(self.data.as_mut()).0 }
     }
 }
-
-/*
-struct GraphSpawner<T, O>{
-    spawn: fn(parent_graph: &mut Graph, params: &T) -> Vec<Node>,
-    params: Buffer,
-    marker: PhantomData<O>
-}
-
-graph.sub_graph(source: Task<Output=T>) -> smth idk
-*/
 
 pub struct GraphBuilder<T: Task + ?Sized> {
     caller: usize,
@@ -293,20 +298,24 @@ impl<T: Task> GraphBuilder<T> {
         let len = self.nodes.borrow().len();
         self.push(Node::new::<U::Output>(len));
         self.nodes.borrow_mut()[len].name = U::name();
-        println!("{}", U::name());
+        if DEBUG {
+            println!("{}", U::name())
+        };
         let mut builder = self.next();
         let ret = task.init(&mut builder);
 
         if builder.is_leaf {
             self.leaf_send.send(builder.caller).unwrap();
         } else {
-            println!("NOT_LEAF: {} <- {:?}", self.caller, builder.awaits);
-            for awaits in &builder.awaits {
-                self.nodes.borrow_mut()[*awaits]
-                    .awaiter
-                    .send(self.caller)
-                    .unwrap();
-            }
+            if DEBUG {
+                println!("NOT_LEAF: {} <- {:?}", self.caller, builder.awaits)
+            };
+            //for awaits in &builder.awaits {
+            //    self.nodes.borrow_mut()[*awaits]
+            //        .awaiter
+            //        .send(self.caller)
+            //        .unwrap();
+            //}
         }
         ret
     }
@@ -396,52 +405,67 @@ impl Graph {
         self.pool.mpi_instance()
     }
 
-    // Should only be called from Pool::assign
     pub fn compute(self: &Arc<Self>, mut node: usize) {
         let waker = Arc::new(NilWaker).into();
         let mut cx = Context::from_waker(&waker);
 
-        // We should return at some point with a Poll<()>
-
         loop {
-            //if self.nodes[node].mpi_instance != self.mpi_instance {
-            //    self.nodes[node]
-            //        .net()
-            //        .send(net::Event::AwaitNode(self.nodes[node].clone()))
-            //        .unwrap();
-            //    return;
-            //}
-            println!(
-                "{} compputing {}",
-                self.nodes[node].mpi_instance, self.nodes[node].name
-            );
-            if self.nodes[node].done.load(Ordering::Acquire) {
+            if DEBUG {
                 println!(
-                    "{} already done {}",
-                    self.mpi_instance(),
-                    self.nodes[node].name
-                );
+                    "{} compputing {}",
+                    self.nodes[node].mpi_instance, self.nodes[node].name
+                )
+            };
+            if self.nodes[node].done.load(Ordering::Acquire) {
+                if DEBUG {
+                    println!(
+                        "{} already done {}",
+                        self.mpi_instance(),
+                        self.nodes[node].name
+                    )
+                };
+                // TODO: Move iterator into its own method (so we can just call next() for getting work to continue here)
+
+                // FIXME: issue with is_being_polled and calling compute directly in assign
+                //
+                // # calling compute, in assign, on the same thread, after assigning to other threads
+                // - would not have to worry about not assigning last task in compute
+                // - could just call assign on awaited parent
+                // - assign could then check if node is located on other instance, and call net-await
+                // - this would require net to be a task. Then net can call compute directly, and it wont be a problem that compute continuelly finds new stuff to do.
+                //
+                // # Pri-que (can just be regular mpsc too)
+                // - If its a stack, we just push all nodes when initializing (leafs last, so they get polled first)
+                // - assign sends to a pri-que instead of assigning to devices directly
+                // - assign then tries to poll the master-task
+                // - only the master-task reads from the priority que (thus que can be mpsc)
+                // - master-task handles both networking and assigning tasks to threads
+                // - master-task should return ready when kill has been shared
+                // - realize should just poll the master-task in a loop
+                //
+                // # Net as a task
+                // only if/when a network gets spawned will mpi stuff have any meaning
+                // so only then should node.mpi_instance be set
                 self.pool
                     .assign(self.nodes[node].awaited_by.try_iter().filter_map(|i| {
                         let reader = self.nodes[i].clone();
-                        if reader.mpi_instance == self.mpi_instance() {
-                            return Some(reader);
+                        if reader.mpi_instance != self.mpi_instance() {
+                            panic!(
+                                "{} on {}, awaited by {} on {}",
+                                self.nodes[node].name,
+                                self.mpi_instance(),
+                                reader.name,
+                                reader.mpi_instance
+                            );
+                            return None;
                         }
-                        //if !reader.is_being_polled.swap(true, Ordering::Acquire) {
-                        reader
-                            .net()
-                            .send(net::Event::NodeDone {
-                                awaited: node,
-                                reader: reader.this_node,
-                            })
-                            .unwrap();
-                        //    self.nodes[node].awaiter.send(reader.this_node).unwrap();
-                        //    reader.is_being_polled.store(false, Ordering::Release);
-                        //} else {
-                        //    panic!("Unable to get ownership, for cross machine await")
-                        //}
-                        None
+                        Some(reader)
                     }));
+
+                self.nodes[node]
+                    .net()
+                    .send(net::Event::NodeDone { awaited: node })
+                    .unwrap();
                 self.nodes[node]
                     .is_being_polled
                     .store(false, Ordering::Release);
@@ -461,22 +485,28 @@ impl Graph {
                     continue;
                 }
                 Poll::Pending => {
-                    let awaited = self.nodes[node].qued.load(Ordering::Acquire);
+                    let awaited = self.nodes[node].continue_to.load(Ordering::Acquire);
                     if awaited >= 0 {
                         let awaited = awaited as usize;
                         if self.nodes[awaited].mpi_instance != self.mpi_instance() {
+                            // TODO: Do this in assign.
                             self.nodes[node]
                                 .net()
-                                .send(net::Event::AwaitNode {
-                                    awaited,
-                                    reader: node,
-                                })
+                                .send(net::Event::AwaitNode { awaited })
                                 .unwrap();
                             return;
                         }
                         self.nodes[node]
                             .is_being_polled
                             .store(false, Ordering::Release);
+
+                        // TODO: just call assign here
+                        if self.nodes[awaited]
+                            .is_being_polled
+                            .swap(true, Ordering::Acquire)
+                        {
+                            return;
+                        }
 
                         node = awaited
                     } else {
@@ -528,17 +558,24 @@ impl Graph {
             n.use_net(Some(net_events.clone()));
             n.respawn(&self)
         }
-        self.pool.assign(self.leafs.iter().filter_map(|n| {
-            // FIXME: Initialy push children to leaf_node.awaiter
-            // TODO:  If there are devices left, after assigning leaf nodes.
-            //        Then start assigning children.
-            if self.nodes[n].mpi_instance == self.mpi_instance() {
-                println!("LEAF: {n}");
-                Some(self.nodes[n].clone())
-            } else {
-                None
-            }
-        }));
+        //self.pool.assign(self.leafs.iter().filter_map(|n| {
+        //    // FIXME: Initialy push children to leaf_node.awaiter
+        //    //        (1 and 2 arent leaf nodes. Only X has no children)
+        //    //        this is fine with pri-que, if leafs are just pushed with higher priority
+        //    // TODO:  If there are devices left, after assigning leaf nodes.
+        //    //        Then start assigning children.
+        //    if self.nodes[n].mpi_instance == self.mpi_instance() {
+        //        if DEBUG {
+        //            println!("LEAF: {n}")
+        //        };
+        //        Some(self.nodes[n].clone())
+        //    } else {
+        //        None
+        //    }
+        //}));
+        if self.mpi_instance() == 0 {
+            self.pool.assign([self.nodes[0].clone()])
+        }
 
         let hold_on = network.run();
         self.pool.finish();
@@ -552,7 +589,7 @@ impl Graph {
     pub fn print(&self) {
         for node in &self.nodes {
             //if node.is_being_polled.swap(true, Ordering::Acquire) {
-            //    println!("{} -> {} is being polled", node.mpi_instance, node.name);
+            //    if DEBUG{println!("{} -> {} is being polled", node.mpi_instance, node.name)};
             //    return;
             //}
             let mut awaiters = vec![];
@@ -562,10 +599,12 @@ impl Graph {
             for (n, _) in &awaiters {
                 node.awaiter.send(*n).unwrap();
             }
-            println!(
-                "{} -> {} awaited by {:?}",
-                node.mpi_instance, node.name, awaiters
-            );
+            if DEBUG {
+                println!(
+                    "{} -> {} awaited by {:?}",
+                    node.mpi_instance, node.name, awaiters
+                )
+            };
             node.is_being_polled.store(false, Ordering::Release);
         }
     }
@@ -620,6 +659,15 @@ mod test {
     use test::black_box;
     use test::Bencher;
 
+    /*
+    struct GraphSpawner<T, O>{
+        spawn: fn(parent_graph: &mut Graph, params: &T) -> Vec<Node>,
+        params: Buffer,
+        marker: PhantomData<O>
+    }
+
+    graph.sub_graph(source: Task<Output=T>) -> smth idk
+    */
     //struct AnonymousTask<Args, O>(
     //    fn(&Arc<Graph>, Arc<Node>, Args) -> BoxFuture,
     //    Args,
@@ -642,11 +690,6 @@ mod test {
     //    }
     //}
 
-    // # This does not need to be multithreaded...
-    // metalmorphosis::test::Y::0 -> metalmorphosis::test::F::2
-    // metalmorphosis::test::F::2 -> metalmorphosis::test::X::1
-    // metalmorphosis::test::F::2 <- metalmorphosis::test::X::1
-    // metalmorphosis::test::X::1 <- metalmorphosis::test::F::2
     struct X;
     impl Task for X {
         type InitOutput = Symbol<f32>;
