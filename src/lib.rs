@@ -2,6 +2,8 @@
 //! <img src="https://raw.githubusercontent.com/unic0rn9k/metalmorphosis/4th_refactor/logo.png" width="300"/>
 //! </div>
 //!
+//! [Benchmarks can be found here](benchmarks_og_bilag.md)
+//!
 //! ## Definitions
 //! - Symbol: a type used to refer to a node,
 //!   that can be bound to another node, returning a future to the output of a node.
@@ -95,7 +97,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use std::task::{Context, Poll, Wake};
 
-const DEBUG: bool = true;
+const DEBUG: bool = false;
 
 #[derive(Clone, Copy)]
 pub struct Symbol<T>(usize, PhantomData<T>);
@@ -167,6 +169,16 @@ impl<T: 'static> Future for OwnedSymbol<T> {
 
 pub type BoxFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 pub type AsyncFunction = Box<dyn Fn(&Arc<Graph>, Arc<Node>) -> BoxFuture>;
+
+/// The first argument is a vector containing all the parents of the node being scheduled.
+/// The second argument is the amount of mpi instances.
+/// The output should be the mpi instance that the task will be executed on.
+/// The output must never be greater than the amount of mpi instances.
+pub type Scheduler = fn(Vec<&Node>, usize) -> usize;
+
+pub fn keep_local_schedular(_: Vec<&Node>, _: usize) -> usize {
+    0
+}
 
 // Node could be split into two structs. One for everything that needs unsafe interior mutability. And one for the other stuff.
 pub struct Node {
@@ -274,6 +286,7 @@ pub struct GraphBuilder<T: Task + ?Sized> {
     leaf_recv: Rc<Receiver<usize>>,
     leaf_send: Sender<usize>,
     awaits: Vec<usize>,
+    //schedulers: Vec<Scheduler>,
 }
 
 impl<T: Task> GraphBuilder<T> {
@@ -290,11 +303,17 @@ impl<T: Task> GraphBuilder<T> {
             leaf_recv: self.leaf_recv.clone(),
             leaf_send: self.leaf_send.clone(),
             awaits: vec![],
+            //schedulers: vec![],
         }
     }
 
     pub fn spawn<U: Task>(&mut self, task: U) -> U::InitOutput {
-        self.is_leaf = false;
+        //if self.schedulers.is_empty() {
+        //    self.schedulers.push(keep_local_schedular)
+        //} else {
+        //    self.schedulers.push(self.schedulers[self.caller])
+        //}
+
         let len = self.nodes.borrow().len();
         self.push(Node::new::<U::Output>(len));
         self.nodes.borrow_mut()[len].name = U::name();
@@ -310,12 +329,12 @@ impl<T: Task> GraphBuilder<T> {
             if DEBUG {
                 println!("NOT_LEAF: {} <- {:?}", self.caller, builder.awaits)
             };
-            //for awaits in &builder.awaits {
-            //    self.nodes.borrow_mut()[*awaits]
-            //        .awaiter
-            //        .send(self.caller)
-            //        .unwrap();
-            //}
+            for awaits in &builder.awaits {
+                self.nodes.borrow_mut()[*awaits]
+                    .awaiter
+                    .send(self.caller)
+                    .unwrap();
+            }
         }
         ret
     }
@@ -343,6 +362,7 @@ impl<T: Task> GraphBuilder<T> {
             leaf_send,
             is_leaf: true,
             awaits: vec![],
+            //schedulers: vec![],
         };
         entry.spawn(task);
         entry
@@ -357,6 +377,7 @@ impl<T: Task> GraphBuilder<T> {
     }
 
     pub fn lock_symbol<U>(&mut self, s: Symbol<U>) -> LockedSymbol<U> {
+        self.is_leaf = false;
         self.awaits.push(s.0);
         LockedSymbol {
             returner: s.0,
@@ -365,8 +386,22 @@ impl<T: Task> GraphBuilder<T> {
         }
     }
 
-    pub fn set_mpi_instance(&mut self, mpi: i32) {
-        self.nodes.borrow_mut()[self.caller].mpi_instance = mpi
+    //pub fn set_mpi_instance(&mut self, mpi: i32) {
+    //    self.nodes.borrow_mut()[self.caller].mpi_instance = mpi
+    //}
+
+    // # Naiv distributed shcedular
+    // we start with the 0-in-degree nodes
+    // we have array where each element (usize) corresponds to one of those nodes
+    // then evaluate children (taking array of indicies from parents).
+    // Each child gets assigned to the index of the node that it had the most incomming edges from
+    // repeat for children (taking array of the indicies assign to their parents)
+    // also, dont count edges from parents that have already shared value with a given machine.
+    //
+    // the algorithm does not distribute nodes evenly, but it will minimize network communications
+    // it also does not account for message size or computation cost
+    pub fn scheduler(&mut self, scheduler: Scheduler) {
+        //self.schedulers[self.caller] = scheduler
     }
 }
 
@@ -405,6 +440,23 @@ impl Graph {
         self.pool.mpi_instance()
     }
 
+    fn children<'a>(self: &'a Arc<Self>, node: usize) -> impl Iterator<Item = Arc<Node>> + 'a {
+        self.nodes[node].awaited_by.try_iter().filter_map(move |i| {
+            let reader = self.nodes[i].clone();
+            if reader.mpi_instance != self.mpi_instance() {
+                panic!(
+                    "{} on {}, awaited by {} on {}",
+                    self.nodes[node].name,
+                    self.mpi_instance(),
+                    reader.name,
+                    reader.mpi_instance
+                );
+                return None;
+            }
+            Some(reader)
+        })
+    }
+
     pub fn compute(self: &Arc<Self>, mut node: usize) {
         let waker = Arc::new(NilWaker).into();
         let mut cx = Context::from_waker(&waker);
@@ -424,43 +476,14 @@ impl Graph {
                         self.nodes[node].name
                     )
                 };
-                // TODO: Move iterator into its own method (so we can just call next() for getting work to continue here)
 
-                // FIXME: issue with is_being_polled and calling compute directly in assign
-                //
-                // # calling compute, in assign, on the same thread, after assigning to other threads
-                // - would not have to worry about not assigning last task in compute
-                // - could just call assign on awaited parent
-                // - assign could then check if node is located on other instance, and call net-await
-                // - this would require net to be a task. Then net can call compute directly, and it wont be a problem that compute continuelly finds new stuff to do.
-                //
-                // # Pri-que (can just be regular mpsc too)
-                // - If its a stack, we just push all nodes when initializing (leafs last, so they get polled first)
-                // - assign sends to a pri-que instead of assigning to devices directly
-                // - assign then tries to poll the master-task
-                // - only the master-task reads from the priority que (thus que can be mpsc)
-                // - master-task handles both networking and assigning tasks to threads
-                // - master-task should return ready when kill has been shared
-                // - realize should just poll the master-task in a loop
-                //
-                // # Net as a task
-                // only if/when a network gets spawned will mpi stuff have any meaning
-                // so only then should node.mpi_instance be set
-                self.pool
-                    .assign(self.nodes[node].awaited_by.try_iter().filter_map(|i| {
-                        let reader = self.nodes[i].clone();
-                        if reader.mpi_instance != self.mpi_instance() {
-                            panic!(
-                                "{} on {}, awaited by {} on {}",
-                                self.nodes[node].name,
-                                self.mpi_instance(),
-                                reader.name,
-                                reader.mpi_instance
-                            );
-                            return None;
-                        }
-                        Some(reader)
-                    }));
+                let mut children = self.children(node);
+                let continue_with = if let Some(node) = children.next() {
+                    node.this_node
+                } else {
+                    return;
+                };
+                self.pool.assign(children);
 
                 self.nodes[node]
                     .net()
@@ -469,7 +492,15 @@ impl Graph {
                 self.nodes[node]
                     .is_being_polled
                     .store(false, Ordering::Release);
-                return;
+
+                if self.nodes[continue_with]
+                    .is_being_polled
+                    .swap(true, Ordering::Acquire)
+                {
+                    return;
+                }
+                node = continue_with;
+                continue;
             }
 
             if self.nodes[node].mpi_instance != self.mpi_instance() {
@@ -489,7 +520,6 @@ impl Graph {
                     if awaited >= 0 {
                         let awaited = awaited as usize;
                         if self.nodes[awaited].mpi_instance != self.mpi_instance() {
-                            // TODO: Do this in assign.
                             self.nodes[node]
                                 .net()
                                 .send(net::Event::AwaitNode { awaited })
@@ -500,7 +530,6 @@ impl Graph {
                             .is_being_polled
                             .store(false, Ordering::Release);
 
-                        // TODO: just call assign here
                         if self.nodes[awaited]
                             .is_being_polled
                             .swap(true, Ordering::Acquire)
@@ -516,73 +545,50 @@ impl Graph {
             }
         }
     }
-    // # Better scheduler
-    // ## Init
-    // all nodes contain sender to shared que of tasks to be polled. (why cant it just be all threads?)
-    // leaf nodes are sendt to shared que.
-    //
-    // ## Realize
-    // Nodes from shared que are polled.
-    // when parent returns pending, child is sendt to que.
-    // quen and networking in loop.
 
     pub fn realize(self: Arc<Self>) {
-        // It might be easyest/ a good solution, to find a distribution of tasks when initializing the graf,
-        // and then improving the distribution at runtime. This could be achived with 'execution masks'.
-        // Then if we make the graf queriable, and so that user can mutate the distribution mask manually,
-        // and let user read benchmark data (How long execution/distribution took on different devices)
-        // metalmorphosis suddenly provides primitives!
-        //
-        // Use Reciever::iter to implement custom pre-schedulers as closures.
-        // If the the graph kept track of nodes reselution at evaluation time, this could be done dynamically.
-        //
-        // # Naiv distributed shcedular
-        // we start with the 0-in-degree nodes
-        // we have array where each element (usize) corresponds to one of those nodes
-        // then evaluate children (taking array of indicies from parents).
-        // Each child gets assigned to the index of the node that it had the most incomming edges from
-        // repeat for children (taking array of the indicies assign to their parents)
-        // also, dont count edges from parents that have already shared value with a given machine.
-        //
-        // the algorithm does not distribute nodes evenly, but it will minimize network communications
-        // it also does not account for message size or computation cost
         assert_eq!(
             Arc::strong_count(&self),
             1,
-            "Cannot realize Graph if there exists other references to it"
+            "Cannot realize Graph, because there exists {} other references to it",
+            Arc::strong_count(&self),
         );
 
-        let (net_events, network) = net::instantiate(self.clone());
+        let (net_events, network) = dummy_net::instantiate(self.clone());
         self.pool.init(network.rank());
         for n in &self.nodes {
             n.use_net(Some(net_events.clone()));
             n.respawn(&self)
         }
-        //self.pool.assign(self.leafs.iter().filter_map(|n| {
-        //    // FIXME: Initialy push children to leaf_node.awaiter
-        //    //        (1 and 2 arent leaf nodes. Only X has no children)
-        //    //        this is fine with pri-que, if leafs are just pushed with higher priority
-        //    // TODO:  If there are devices left, after assigning leaf nodes.
-        //    //        Then start assigning children.
-        //    if self.nodes[n].mpi_instance == self.mpi_instance() {
-        //        if DEBUG {
-        //            println!("LEAF: {n}")
-        //        };
-        //        Some(self.nodes[n].clone())
-        //    } else {
-        //        None
-        //    }
-        //}));
-        if self.mpi_instance() == 0 {
-            self.pool.assign([self.nodes[0].clone()])
-        }
+
+        self.pool.assign(self.leafs.iter().filter_map(|n| {
+            // FIXME: Initialy push children to leaf_node.awaiter
+            //        (1 and 2 arent leaf nodes. Only X has no children)
+            //        this is fine with pri-que, if leafs are just pushed with higher priority
+            // TODO:  If there are devices left, after assigning leaf nodes.
+            //        Then start assigning children.
+            if self.nodes[n].mpi_instance == self.mpi_instance() {
+                if DEBUG {
+                    println!("LEAF: {n}")
+                };
+                Some(self.nodes[n].clone())
+            } else {
+                None
+            }
+        }));
+        //if self.mpi_instance() == 0 {
+        //    self.pool.assign([self.nodes[0].clone()])
+        //}
 
         let hold_on = network.run();
         self.pool.finish();
         drop(hold_on);
         match Arc::try_unwrap(self) {
             Ok(this) => this.pool.kill(),
-            Err(s) => panic!("fuck {}", Arc::strong_count(&s)),
+            Err(s) => panic!(
+                "Unable to gracefully kill graph, because there exists {} other references to it",
+                Arc::strong_count(&s)
+            ),
         }
     }
 
@@ -695,7 +701,7 @@ mod test {
         type InitOutput = Symbol<f32>;
         type Output = f32;
         fn init(self, graph: &mut GraphBuilder<Self>) -> Self::InitOutput {
-            graph.set_mpi_instance(1);
+            //graph.set_mpi_instance(1);
             task!(graph, (), 2.);
             graph.this_node()
         }

@@ -3,13 +3,14 @@ Under er et benchmark der viser overhead af executoren, sammenlignet med nogen h
 Benchmarked includere overhead af at initializere task-graphen.
 ```sh
 $ cargo bench
-test test::empty_vec    ... bench:           5 ns/iter (+/- 2)
-test test::f_of_x_bench ... bench:     420,575 ns/iter (+/- 48,904)
-test test::index        ... bench:           1 ns/iter (+/- 0)
-test test::mull_add_1   ... bench:           6 ns/iter (+/- 2)
-test test::mull_add_2   ... bench:          11 ns/iter (+/- 5)
-test test::spawn_async  ... bench:           0 ns/iter (+/- 0)
-test test::atomic_load  ... bench:           1 ns/iter (+/- 0)
+test test::atomic_load ... bench:           1 ns/iter (+/- 0)
+test test::empty_vec   ... bench:           5 ns/iter (+/- 2)
+test test::f_of_x      ... bench:     172,820 ns/iter (+/- 49,560)
+test test::index       ... bench:           1 ns/iter (+/- 0)
+test test::mull_add_1  ... bench:           7 ns/iter (+/- 3)
+test test::mull_add_2  ... bench:          13 ns/iter (+/- 6)
+test test::send_recv   ... bench:         392 ns/iter (+/- 156)
+test test::spawn_async ... bench:           0 ns/iter (+/- 0)
 ```
 
 efter at have valgt bedere Atomic Orderings blev `f_of_x` significant hurtigere.

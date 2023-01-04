@@ -4,13 +4,16 @@ use mpi::{
     traits::{AsDatatype, Communicator, Destination, Equivalence, Source},
 };
 use serde_derive::{Deserialize, Serialize};
-use std::sync::{
-    atomic::Ordering,
-    mpsc::{channel, Receiver, Sender},
-    Arc,
+use std::{
+    future::Future,
+    sync::{
+        atomic::Ordering,
+        mpsc::{channel, Receiver, Sender},
+        Arc,
+    },
 };
 
-use crate::{Graph, Node, DEBUG};
+use crate::{task, Graph, Node, Task, DEBUG};
 
 // TODO: Make networking a task.
 // Strictly it would only need to be polled once a node has finished.
@@ -145,11 +148,8 @@ impl Networker {
                     )
                 };
                 self.awaited_at[awaited].push(src);
-                let node = &self.graph.nodes[awaited];
 
-                //if node.done.load(Ordering::Acquire) {
                 self.graph.pool.assign([self.graph.nodes[awaited].clone()])
-                //}
             }
             NodeReady { data, node } => {
                 let node = self.graph.nodes[node].clone();
