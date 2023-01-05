@@ -2,7 +2,7 @@
 //! <img src="https://raw.githubusercontent.com/unic0rn9k/metalmorphosis/4th_refactor/logo.png" width="300"/>
 //! </div>
 //!
-//! [Benchmarks can be found here](benchmarks_og_bilag.md)
+//! Benchmarks can be found at [benchmarks_og_bilag.md](benchmarks_og_bilag.md)
 //!
 //! ## Definitions
 //! - Symbol: a type used to refer to a node,
@@ -97,7 +97,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use std::task::{Context, Poll, Wake};
 
-const DEBUG: bool = false;
+const DEBUG: bool = true;
 
 #[derive(Clone, Copy)]
 pub struct Symbol<T>(usize, PhantomData<T>);
@@ -386,9 +386,9 @@ impl<T: Task> GraphBuilder<T> {
         }
     }
 
-    //pub fn set_mpi_instance(&mut self, mpi: i32) {
-    //    self.nodes.borrow_mut()[self.caller].mpi_instance = mpi
-    //}
+    pub fn set_mpi_instance(&mut self, mpi: i32) {
+        self.nodes.borrow_mut()[self.caller].mpi_instance = mpi
+    }
 
     // # Naiv distributed shcedular
     // we start with the 0-in-degree nodes
@@ -441,16 +441,22 @@ impl Graph {
     }
 
     fn children<'a>(self: &'a Arc<Self>, node: usize) -> impl Iterator<Item = Arc<Node>> + 'a {
-        self.nodes[node].awaited_by.try_iter().filter_map(move |i| {
+        let node = &self.nodes[node];
+        let net = node.net();
+        node.awaited_by.try_iter().filter_map(move |i| {
             let reader = self.nodes[i].clone();
+            println!(
+                "{} awaited by {} on {}",
+                node.name,
+                reader.name,
+                self.mpi_instance()
+            );
             if reader.mpi_instance != self.mpi_instance() {
-                panic!(
-                    "{} on {}, awaited by {} on {}",
-                    self.nodes[node].name,
-                    self.mpi_instance(),
-                    reader.name,
-                    reader.mpi_instance
-                );
+                net.send(net::Event::Consumes {
+                    awaited: node.this_node,
+                    at: reader.mpi_instance,
+                })
+                .unwrap();
                 return None;
             }
             Some(reader)
@@ -470,18 +476,14 @@ impl Graph {
             };
             if self.nodes[node].done.load(Ordering::Acquire) {
                 if DEBUG {
-                    println!(
-                        "{} already done {}",
-                        self.mpi_instance(),
-                        self.nodes[node].name
-                    )
+                    println!("{} done at {}", self.nodes[node].name, self.mpi_instance(),)
                 };
 
                 let mut children = self.children(node);
                 let continue_with = if let Some(node) = children.next() {
                     node.this_node
                 } else {
-                    return;
+                    node
                 };
                 self.pool.assign(children);
 
@@ -497,6 +499,9 @@ impl Graph {
                     .is_being_polled
                     .swap(true, Ordering::Acquire)
                 {
+                    return;
+                }
+                if node == continue_with {
                     return;
                 }
                 node = continue_with;
@@ -554,7 +559,7 @@ impl Graph {
             Arc::strong_count(&self),
         );
 
-        let (net_events, network) = dummy_net::instantiate(self.clone());
+        let (net_events, network) = net::instantiate(self.clone());
         self.pool.init(network.rank());
         for n in &self.nodes {
             n.use_net(Some(net_events.clone()));
@@ -569,7 +574,9 @@ impl Graph {
             //        Then start assigning children.
             if self.nodes[n].mpi_instance == self.mpi_instance() {
                 if DEBUG {
-                    println!("LEAF: {n}")
+                    println!("O LEAF: {n}")
+                } else {
+                    println!("X LEAF: {n}")
                 };
                 Some(self.nodes[n].clone())
             } else {
@@ -581,12 +588,13 @@ impl Graph {
         //}
 
         let hold_on = network.run();
+        println!("{} exiting...", self.mpi_instance());
         self.pool.finish();
         drop(hold_on);
         match Arc::try_unwrap(self) {
             Ok(this) => this.pool.kill(),
             Err(s) => panic!(
-                "Unable to gracefully kill graph, because there exists {} other references to it",
+                "Unable to gracefully kill graph execution, because there exists {} other references to it",
                 Arc::strong_count(&s)
             ),
         }
@@ -701,7 +709,7 @@ mod test {
         type InitOutput = Symbol<f32>;
         type Output = f32;
         fn init(self, graph: &mut GraphBuilder<Self>) -> Self::InitOutput {
-            //graph.set_mpi_instance(1);
+            graph.set_mpi_instance(1);
             task!(graph, (), 2.);
             graph.this_node()
         }

@@ -5,6 +5,7 @@ Benchmarked includere overhead af at initializere task-graphen.
 $ cargo bench
 test test::atomic_load ... bench:           1 ns/iter (+/- 0)
 test test::empty_vec   ... bench:           5 ns/iter (+/- 2)
+test test::f_of_x_old  ... bench:     420,575 ns/iter (+/- 48,904)
 test test::f_of_x      ... bench:     172,820 ns/iter (+/- 49,560)
 test test::index       ... bench:           1 ns/iter (+/- 0)
 test test::mull_add_1  ... bench:           7 ns/iter (+/- 3)

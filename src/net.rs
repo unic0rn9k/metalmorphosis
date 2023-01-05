@@ -1,19 +1,16 @@
 use mpi::{
-    point_to_point::{ReceiveFuture, Status},
-    request::{CancelGuard, WaitGuard},
-    traits::{AsDatatype, Communicator, Destination, Equivalence, Source},
+    environment::Universe,
+    request::WaitGuard,
+    traits::{AsDatatype, Communicator, Destination, Source},
 };
 use serde_derive::{Deserialize, Serialize};
-use std::{
-    future::Future,
-    sync::{
-        atomic::Ordering,
-        mpsc::{channel, Receiver, Sender},
-        Arc,
-    },
+use std::sync::{
+    atomic::Ordering,
+    mpsc::{channel, sync_channel, Receiver, Sender},
+    Arc,
 };
 
-use crate::{task, Graph, Node, Task, DEBUG};
+use crate::{Graph, DEBUG};
 
 // TODO: Make networking a task.
 // Strictly it would only need to be polled once a node has finished.
@@ -37,6 +34,7 @@ pub enum Event {
     Kill,
     AwaitNode { awaited: usize },
     NodeDone { awaited: usize },
+    Consumes { awaited: usize, at: i32 },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -59,7 +57,7 @@ use Message::*;
 
 pub struct Networker {
     events: Receiver<Event>,
-    universe: mpi::environment::Universe,
+    _universe: Universe,
     world: mpi::topology::SystemCommunicator,
     graph: Arc<Graph>,
     awaited_at: Vec<Vec<i32>>,
@@ -93,6 +91,7 @@ impl Networker {
                             ),
 
                             Event::NodeDone { awaited } => unsafe {
+                                println!("{awaited} done at {}", self.world.rank());
                                 let node = &self.graph.nodes[awaited];
                                 (
                                     &self.awaited_at[awaited][..],
@@ -103,10 +102,17 @@ impl Networker {
                                     .serialize(),
                                 )
                             },
+
+                            Event::Consumes { awaited, at } => {
+                                println!("C... {awaited} awaited at {at}");
+                                self.awaited_at[awaited].push(at);
+                                continue;
+                            }
                         };
 
                         mpi::request::scope(|scope| {
                             for dst in dst {
+                                println!("Sending results to {dst}");
                                 let _ = WaitGuard::from(
                                     self.world.process_at_rank(*dst).immediate_send(scope, &msg),
                                 );
@@ -185,9 +191,9 @@ pub fn instantiate(graph: Arc<Graph>) -> (Sender<Event>, Networker) {
     (
         s,
         Networker {
+            _universe: universe,
             awaited_at: vec![vec![]; graph.nodes.len()],
             events: r,
-            universe,
             world,
             graph,
         },
