@@ -64,7 +64,7 @@ pub struct Networker {
 }
 
 impl Networker {
-    pub fn run(mut self) -> Receiver<Event> {
+    pub fn run(&mut self) {
         let size = self.world.size();
         loop {
             let mut buffer = [0u8; 1024];
@@ -133,9 +133,13 @@ impl Networker {
                 }
             });
             if kill_network {
-                return self.events;
+                println!("Exiting net...");
+                return;
             };
         }
+    }
+    pub fn kill(self) -> Receiver<Event> {
+        self.events
     }
     pub fn rank(&self) -> i32 {
         self.world.rank()
@@ -145,7 +149,6 @@ impl Networker {
         match msg {
             Kill => return true,
             AwaitNode { awaited } => {
-                // TODO: push to self.awaited_at[awaited]
                 if DEBUG {
                     println!(
                         "mpi:{} awaited {}",
@@ -155,7 +158,7 @@ impl Networker {
                 };
                 self.awaited_at[awaited].push(src);
 
-                self.graph.pool.assign([self.graph.nodes[awaited].clone()])
+                self.graph.pool.assign([&self.graph.nodes[awaited]])
             }
             NodeReady { data, node } => {
                 let node = self.graph.nodes[node].clone();
@@ -166,8 +169,8 @@ impl Networker {
                 node.done.store(true, Ordering::Release);
                 unsafe { (*node.output.get()).deserialize(&data) }
 
-                self.graph.print();
-                self.graph.compute(node.this_node);
+                //self.graph.print();
+                self.graph.assign_children_of(&node);
                 if DEBUG {
                     println!(
                         "{} ::NET:: node {} ready",

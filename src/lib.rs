@@ -76,28 +76,35 @@
 
 mod dummy_net;
 mod error;
+pub mod mpmc;
 mod net;
 mod workpool;
 
+use dummy_net as net_;
+//use net as net_;
+
 use error::{Error, Result};
-use serde::{Deserialize, Serialize};
+use mpmc::UndoStack;
 use workpool::Pool;
 
 pub use mpi::time;
+use serde::{Deserialize, Serialize};
 use std::any::{type_name, Any};
 use std::cell::{RefCell, UnsafeCell};
 use std::future::Future;
+use std::hint::spin_loop;
 use std::marker::{PhantomData, PhantomPinned};
 use std::mem::transmute;
+use std::ops::DerefMut;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool, AtomicIsize};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::task::{Context, Poll, Wake};
 
-const DEBUG: bool = true;
+const DEBUG: bool = false;
 
 #[derive(Clone, Copy)]
 pub struct Symbol<T>(usize, PhantomData<T>);
@@ -109,12 +116,9 @@ pub struct LockedSymbol<T> {
 }
 impl<T> LockedSymbol<T> {
     fn own(self, graph: &Arc<Graph>) -> OwnedSymbol<T> {
-        let que = graph.nodes[self.returner].awaiter.clone();
-        //que.send(self.reader).unwrap();
         OwnedSymbol {
             returner: graph.nodes[self.returner].clone(),
             reader: graph.nodes[self.reader].clone(),
-            que,
             marker: PhantomData,
         }
     }
@@ -124,7 +128,6 @@ impl<T> LockedSymbol<T> {
 pub struct OwnedSymbol<T> {
     returner: Arc<Node>,
     reader: Arc<Node>,
-    que: Sender<usize>,
     marker: PhantomData<T>,
 }
 unsafe impl<T> Send for OwnedSymbol<T> {}
@@ -161,7 +164,11 @@ impl<T: 'static> Future for OwnedSymbol<T> {
             self.reader
                 .continue_to
                 .store(self.returner.this_node as isize, Ordering::Release);
-            self.que.send(self.reader.this_node).unwrap();
+            self.returner
+                .awaited_by
+                .read()
+                .unwrap()
+                .push(self.reader.this_node, 1);
             Poll::Pending
         }
     }
@@ -181,13 +188,14 @@ pub fn keep_local_schedular(_: Vec<&Node>, _: usize) -> usize {
 }
 
 // Node could be split into two structs. One for everything that needs unsafe interior mutability. And one for the other stuff.
+// TODO: Benchmark with and without repr
+#[repr(align(128))]
 pub struct Node {
     name: &'static str,
     task: AsyncFunction,
     future: UnsafeCell<BoxFuture>, // X
     continue_to: AtomicIsize,      // This is just a Waker...
-    awaited_by: Receiver<usize>,   // X
-    awaiter: Sender<usize>,        // X
+    awaited_by: RwLock<mpmc::UndoStack<usize>>,
     this_node: usize,
     output: UnsafeCell<Buffer>,
     done: AtomicBool,
@@ -200,15 +208,13 @@ unsafe impl Sync for Node {}
 
 impl Node {
     fn new<T: Serialize + Deserialize<'static> + Sync + 'static>(this_node: usize) -> Self {
-        let (awaiter, awaited_by) = channel();
         Node {
+            this_node,
+            awaited_by: RwLock::new(mpmc::Stack::new(1, 3).undoable()),
             name: "NIL",
             task: Box::new(|_, _| Box::pin(async {})),
             future: UnsafeCell::new(Box::pin(async {})),
             continue_to: AtomicIsize::new(-1),
-            awaited_by,
-            awaiter,
-            this_node,
             output: UnsafeCell::new(Buffer::new::<T>()),
             done: AtomicBool::new(false),
             is_being_polled: AtomicBool::new(false),
@@ -218,7 +224,14 @@ impl Node {
     }
 
     fn respawn(self: &Arc<Self>, graph: &Arc<Graph>) {
-        unsafe { (*self.future.get()) = (self.task)(graph, self.clone()) }
+        unsafe {
+            while self.is_being_polled.load(Ordering::Acquire) {
+                spin_loop()
+            }
+            self.awaited_by.write().unwrap().undo();
+            self.done.store(false, Ordering::SeqCst);
+            (*self.future.get()) = (self.task)(graph, self.clone())
+        }
     }
 
     fn use_net(self: &Arc<Self>, net: Option<Sender<net::Event>>) {
@@ -239,6 +252,10 @@ impl Node {
                 )
             })
         }
+    }
+
+    fn try_poll(self: &Arc<Self>) -> bool {
+        !self.is_being_polled.swap(true, Ordering::Acquire)
     }
 }
 
@@ -283,8 +300,7 @@ pub struct GraphBuilder<T: Task + ?Sized> {
     nodes: Rc<RefCell<Vec<Node>>>,
     marker: PhantomData<T>,
     is_leaf: bool,
-    leaf_recv: Rc<Receiver<usize>>,
-    leaf_send: Sender<usize>,
+    leafs: Arc<RwLock<UndoStack<usize>>>,
     awaits: Vec<usize>,
     //schedulers: Vec<Scheduler>,
 }
@@ -300,8 +316,7 @@ impl<T: Task> GraphBuilder<T> {
             nodes: self.nodes.clone(),
             marker: PhantomData,
             is_leaf: true,
-            leaf_recv: self.leaf_recv.clone(),
-            leaf_send: self.leaf_send.clone(),
+            leafs: self.leafs.clone(),
             awaits: vec![],
             //schedulers: vec![],
         }
@@ -324,27 +339,42 @@ impl<T: Task> GraphBuilder<T> {
         let ret = task.init(&mut builder);
 
         if builder.is_leaf {
-            self.leaf_send.send(builder.caller).unwrap();
+            println!("Pushed leaf");
+            self.leafs.write().unwrap().push_extend(builder.caller);
         } else {
             if DEBUG {
                 println!("NOT_LEAF: {} <- {:?}", self.caller, builder.awaits)
             };
+
             for awaits in &builder.awaits {
                 self.nodes.borrow_mut()[*awaits]
-                    .awaiter
-                    .send(self.caller)
-                    .unwrap();
+                    .awaited_by
+                    .get_mut()
+                    .unwrap()
+                    .push_extend(self.caller)
             }
         }
         ret
     }
 
     fn drain(self) -> Vec<Arc<Node>> {
-        self.nodes.borrow_mut().drain(..).map(Arc::new).collect()
+        self.nodes
+            .borrow_mut()
+            .drain(..)
+            .map(|n| {
+                let mut q = n.awaited_by.write().unwrap();
+                q.fix_capacity();
+                q.checkpoint();
+                drop(q);
+                Arc::new(n)
+            })
+            .collect()
     }
 
     fn build(self) -> Arc<Graph> {
-        let leafs = self.leaf_recv.clone();
+        let leafs = self.leafs.clone();
+        leafs.write().unwrap().fix_capacity();
+        leafs.write().unwrap().checkpoint();
         Graph::from_nodes(self.drain(), leafs)
     }
 
@@ -353,13 +383,11 @@ impl<T: Task> GraphBuilder<T> {
     //}
 
     pub fn main(task: T) -> Self {
-        let (leaf_send, leaf_recv) = channel();
         let mut entry = Self {
             caller: 0,
             nodes: Rc::new(RefCell::new(vec![])),
             marker: PhantomData,
-            leaf_recv: Rc::new(leaf_recv),
-            leaf_send,
+            leafs: Arc::new(RwLock::new(mpmc::Stack::new(0, 1).undoable())),
             is_leaf: true,
             awaits: vec![],
             //schedulers: vec![],
@@ -412,14 +440,17 @@ pub struct Graph {
     nodes: Vec<Arc<Node>>,
     _marker: PhantomPinned,
     pool: Arc<Pool>,
-    leafs: Rc<Receiver<usize>>,
+    leafs: Arc<RwLock<mpmc::UndoStack<usize>>>,
     // sub_graphs: Vec<GraphSpawner>
 }
 unsafe impl Sync for Graph {}
 unsafe impl Send for Graph {}
 
 impl Graph {
-    pub fn from_nodes(nodes: Vec<Arc<Node>>, leafs: Rc<Receiver<usize>>) -> Arc<Self> {
+    pub fn from_nodes(
+        nodes: Vec<Arc<Node>>,
+        leafs: Arc<RwLock<mpmc::UndoStack<usize>>>,
+    ) -> Arc<Self> {
         Arc::new_cyclic(|graph| Graph {
             nodes,
             _marker: PhantomPinned,
@@ -440,100 +471,96 @@ impl Graph {
         self.pool.mpi_instance()
     }
 
-    fn children<'a>(self: &'a Arc<Self>, node: usize) -> impl Iterator<Item = Arc<Node>> + 'a {
-        let node = &self.nodes[node];
+    fn children<'a>(self: &'a Arc<Self>, node: &'a Arc<Node>) -> Vec<&'a Arc<Node>> {
         let net = node.net();
-        node.awaited_by.try_iter().filter_map(move |i| {
-            let reader = self.nodes[i].clone();
-            println!(
-                "{} awaited by {} on {}",
-                node.name,
-                reader.name,
-                self.mpi_instance()
-            );
-            if reader.mpi_instance != self.mpi_instance() {
-                net.send(net::Event::Consumes {
-                    awaited: node.this_node,
-                    at: reader.mpi_instance,
-                })
-                .unwrap();
-                return None;
-            }
-            Some(reader)
-        })
+        node.awaited_by
+            .write()
+            .unwrap()
+            .into_iter()
+            .filter_map(move |i| {
+                let reader = &self.nodes[i];
+                println!(
+                    "{} awaited by {} on {}",
+                    node.name,
+                    reader.name,
+                    self.mpi_instance()
+                );
+                if reader.mpi_instance != self.mpi_instance() {
+                    net.send(net::Event::Consumes {
+                        awaited: node.this_node,
+                        at: reader.mpi_instance,
+                    })
+                    .unwrap();
+                    return None;
+                }
+                // TODO: Don't assign it if its already done.
+                if reader.done.load(Ordering::Acquire) {
+                    return None;
+                }
+                Some(reader)
+            })
+            .collect()
     }
 
-    pub fn compute(self: &Arc<Self>, mut node: usize) {
+    fn assign_children_of<'a>(self: &'a Arc<Self>, node: &'a Arc<Node>) -> Option<&'a Arc<Node>> {
+        let children = self.children(node);
+        let continue_with = children.last();
+        self.pool.assign(children.iter().copied());
+        continue_with.copied()
+    }
+
+    pub fn compute(self: &Arc<Self>, node: usize) {
         let waker = Arc::new(NilWaker).into();
         let mut cx = Context::from_waker(&waker);
 
+        let mut node = &self.nodes[node];
+
         loop {
             if DEBUG {
-                println!(
-                    "{} compputing {}",
-                    self.nodes[node].mpi_instance, self.nodes[node].name
-                )
+                println!("{} compputing {}", node.mpi_instance, node.name)
             };
-            if self.nodes[node].done.load(Ordering::Acquire) {
-                if DEBUG {
-                    println!("{} done at {}", self.nodes[node].name, self.mpi_instance(),)
-                };
+            if node.done.load(Ordering::SeqCst) {
+                println!("already done");
+                let continue_with = self.assign_children_of(node);
 
-                let mut children = self.children(node);
-                let continue_with = if let Some(node) = children.next() {
-                    node.this_node
-                } else {
-                    node
-                };
-                self.pool.assign(children);
-
-                self.nodes[node]
-                    .net()
-                    .send(net::Event::NodeDone { awaited: node })
+                node.net()
+                    .send(net::Event::NodeDone {
+                        awaited: node.this_node,
+                    })
                     .unwrap();
-                self.nodes[node]
-                    .is_being_polled
-                    .store(false, Ordering::Release);
 
-                if self.nodes[continue_with]
-                    .is_being_polled
-                    .swap(true, Ordering::Acquire)
-                {
-                    return;
+                node.is_being_polled.store(false, Ordering::Release);
+
+                match continue_with {
+                    Some(next) if next.try_poll() => node = next,
+                    _ => return,
                 }
-                if node == continue_with {
-                    return;
-                }
-                node = continue_with;
                 continue;
             }
 
-            if self.nodes[node].mpi_instance != self.mpi_instance() {
+            if node.mpi_instance != self.mpi_instance() {
                 return;
             }
 
-            match unsafe { Pin::new(&mut *self.nodes[node].future.get()) }.poll(&mut cx) {
+            match unsafe { Pin::new(&mut *node.future.get()) }.poll(&mut cx) {
                 Poll::Ready(()) => {
-                    if node == 0 {
-                        self.nodes[node].net().send(net::Event::Kill).unwrap()
+                    println!("=== READY ===");
+                    if node.this_node == 0 {
+                        node.net().send(net::Event::Kill).unwrap()
                     }
-                    self.nodes[node].done.store(true, Ordering::Release);
-                    continue;
+                    node.done.store(true, Ordering::SeqCst);
                 }
+
                 Poll::Pending => {
-                    let awaited = self.nodes[node].continue_to.load(Ordering::Acquire);
+                    // TODO: Push to global que
+                    let awaited = node.continue_to.load(Ordering::Acquire);
                     if awaited >= 0 {
                         let awaited = awaited as usize;
                         if self.nodes[awaited].mpi_instance != self.mpi_instance() {
-                            self.nodes[node]
-                                .net()
-                                .send(net::Event::AwaitNode { awaited })
-                                .unwrap();
+                            node.net().send(net::Event::AwaitNode { awaited }).unwrap();
                             return;
                         }
-                        self.nodes[node]
-                            .is_being_polled
-                            .store(false, Ordering::Release);
+                        node.is_being_polled.store(false, Ordering::Release);
 
                         if self.nodes[awaited]
                             .is_being_polled
@@ -542,7 +569,7 @@ impl Graph {
                             return;
                         }
 
-                        node = awaited
+                        node = &self.nodes[awaited]
                     } else {
                         panic!("Pending nothing?");
                     }
@@ -551,44 +578,52 @@ impl Graph {
         }
     }
 
-    pub fn realize(self: Arc<Self>) {
+    pub fn init_net(self: &Arc<Self>) -> (Sender<net::Event>, net_::Networker) {
         assert_eq!(
-            Arc::strong_count(&self),
+            Arc::strong_count(self),
             1,
-            "Cannot realize Graph, because there exists {} other references to it",
-            Arc::strong_count(&self),
+            "Cannot init Graph, because there exists {} other references to it",
+            Arc::strong_count(self),
         );
+        let (s, n) = net_::instantiate(self.clone());
+        self.pool.init(n.rank());
+        (s, n)
+    }
 
-        let (net_events, network) = net::instantiate(self.clone());
-        self.pool.init(network.rank());
+    pub fn realize(self: &Arc<Self>, net_events: Sender<net::Event>) {
+        self.leafs.write().unwrap().undo();
         for n in &self.nodes {
+            n.respawn(self);
             n.use_net(Some(net_events.clone()));
-            n.respawn(&self)
         }
 
-        self.pool.assign(self.leafs.iter().filter_map(|n| {
-            // FIXME: Initialy push children to leaf_node.awaiter
-            //        (1 and 2 arent leaf nodes. Only X has no children)
-            //        this is fine with pri-que, if leafs are just pushed with higher priority
-            // TODO:  If there are devices left, after assigning leaf nodes.
-            //        Then start assigning children.
-            if self.nodes[n].mpi_instance == self.mpi_instance() {
+        println!(
+            "Leafs: {:?}",
+            self.leafs.write().unwrap().deref_mut().deref_mut()
+        );
+
+        self.pool
+            .assign(self.leafs.write().unwrap().into_iter().filter_map(|n| {
+                // FIXME: Initialy push children to leaf_node.awaiter
+                //        (1 and 2 arent leaf nodes. Only X has no children)
+                //        this is fine with pri-que, if leafs are just pushed with higher priority
+                // TODO:  If there are devices left, after assigning leaf nodes.
+                //        Then start assigning children.
                 if DEBUG {
-                    println!("O LEAF: {n}")
+                    println!("LEAF: {n}")
+                }
+                if self.nodes[n].mpi_instance == self.mpi_instance() {
+                    Some(&self.nodes[n])
                 } else {
-                    println!("X LEAF: {n}")
-                };
-                Some(self.nodes[n].clone())
-            } else {
-                None
-            }
-        }));
+                    None
+                }
+            }));
         //if self.mpi_instance() == 0 {
         //    self.pool.assign([self.nodes[0].clone()])
         //}
+    }
 
-        let hold_on = network.run();
-        println!("{} exiting...", self.mpi_instance());
+    pub fn kill(self: Arc<Self>, hold_on: Receiver<net::Event>) {
         self.pool.finish();
         drop(hold_on);
         match Arc::try_unwrap(self) {
@@ -600,28 +635,34 @@ impl Graph {
         }
     }
 
-    pub fn print(&self) {
-        for node in &self.nodes {
-            //if node.is_being_polled.swap(true, Ordering::Acquire) {
-            //    if DEBUG{println!("{} -> {} is being polled", node.mpi_instance, node.name)};
-            //    return;
-            //}
-            let mut awaiters = vec![];
-            for n in node.awaited_by.try_iter() {
-                awaiters.push((n, self.nodes[n].name));
-            }
-            for (n, _) in &awaiters {
-                node.awaiter.send(*n).unwrap();
-            }
-            if DEBUG {
-                println!(
-                    "{} -> {} awaited by {:?}",
-                    node.mpi_instance, node.name, awaiters
-                )
-            };
-            node.is_being_polled.store(false, Ordering::Release);
+    pub fn spin_down(self: &Arc<Self>) {
+        while self.pool.parked_threads.load(Ordering::SeqCst) != self.pool.num_threads() {
+            spin_loop()
         }
     }
+
+    //pub fn print(&self) {
+    //    for node in &self.nodes {
+    //        //if node.is_being_polled.swap(true, Ordering::Acquire) {
+    //        //    if DEBUG{println!("{} -> {} is being polled", node.mpi_instance, node.name)};
+    //        //    return;
+    //        //}
+    //        let mut awaiters = vec![];
+    //        for n in node.awaited_by.try_iter() {
+    //            awaiters.push((n, self.nodes[n].name));
+    //        }
+    //        for (n, _) in &awaiters {
+    //            node.awaiter.send(*n).unwrap();
+    //        }
+    //        if DEBUG {
+    //            println!(
+    //                "{} -> {} awaited by {:?}",
+    //                node.mpi_instance, node.name, awaiters
+    //            )
+    //        };
+    //        node.is_being_polled.store(false, Ordering::Release);
+    //    }
+    //}
 }
 
 struct NilWaker;
@@ -709,7 +750,7 @@ mod test {
         type InitOutput = Symbol<f32>;
         type Output = f32;
         fn init(self, graph: &mut GraphBuilder<Self>) -> Self::InitOutput {
-            graph.set_mpi_instance(1);
+            //graph.set_mpi_instance(1);
             task!(graph, (), 2.);
             graph.this_node()
         }
@@ -768,11 +809,34 @@ mod test {
 
     #[bench]
     fn f_of_x(b: &mut Bencher) {
+        let builder = GraphBuilder::main(Y);
+        let graph = builder.build();
+        let (net_events, mut net) = graph.init_net();
+        let lock = std::sync::Mutex::new(());
         b.iter(|| {
-            let builder = GraphBuilder::main(Y);
-            let graph = builder.build();
-            graph.realize();
+            let lock = lock.lock();
+            graph.spin_down();
+            graph.realize(net_events.clone());
+            net.run();
+            drop(lock);
         });
+        println!("Finishing test...");
+        graph.kill(net.kill());
+    }
+
+    #[bench]
+    fn f_of_x_simple(b: &mut Bencher) {
+        b.iter(|| {
+            fn f(x: f32) -> f32 {
+                x * 3. + 4.
+            }
+            fn y() {
+                let x = black_box(2.);
+                let y = black_box(f(x));
+                println!("f({x}) = {y}");
+            }
+            black_box(y());
+        })
     }
 
     /*

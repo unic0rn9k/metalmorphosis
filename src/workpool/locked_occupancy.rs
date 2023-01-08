@@ -1,3 +1,5 @@
+// TODO: Replace this with mpmc::Stack
+
 use super::{Pool, ThreadID};
 use std::{
     cell::UnsafeCell,
