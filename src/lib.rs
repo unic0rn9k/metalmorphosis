@@ -30,12 +30,10 @@
 //!     - reusing output in node would confuse executor
 //!
 //! - [ ] clean code (remove duplicate work)
-//! - [ ] stack-que for missed work
 //! - [ ] nicer API (ATLEAST for custom schedular)
-//! - [ ] sending directly on node.awaiter is ugly (also make sure they aren't cloned in parallel)
 //! - [ ] return Result everywhere
 //!
-//! - [ ] priority que.
+//! - [X] priority que.
 //!     - Let users set priority
 //!     - increase priority of awaited children
 //!     - internal events as tasks
