@@ -1,3 +1,61 @@
+//! <div align="center">
+//! <img src="https://raw.githubusercontent.com/unic0rn9k/metalmorphosis/4th_refactor/logo.png" width="400"/>
+//! </div>
+//!
+//! Benchmarks can be found at [benchmarks_og_bilag.md](benchmarks_og_bilag.md)
+//!
+//! ## Definitions
+//! - Symbol: a type used to refer to a node,
+//!   that can be bound to another node, returning a future to the output of a node.
+//!   (it lets you specify edges in the computation graph)
+//!
+//! - Dealocks will be caused by:
+//! `graph.attach_edge(Self::edge(graph));`,
+//! `graph.spawn(F(Self::edge(graph)));`.
+//!
+//! ## TODO
+//! - [X] Type checking
+//! - [X] Buffers
+//! - [X] impl Future for Symbol
+//!
+//! - [X] handle for graph with type information about the node calling it.
+//!
+//! - [X] Executor / schedular
+//!     - Wakers? (wake me up inside)
+//! - [X] multithreaded
+//!     - join future that works with array of symbols
+//!
+//! - [X] Distribute (OpenMPI?)
+//!     - don't time awaits inside node
+//!     - reusing output in node would confuse executor
+//!
+//! - [ ] clean code (remove duplicate work)
+//! - [ ] nicer API (ATLEAST for custom schedular)
+//! - [ ] return Result everywhere
+//! - [ ] if a child is pushed to pool, but all threads are occupied, prefer to poll it from the thread of the parent
+//!
+//! - [X] priority que.
+//!     - Let users set priority
+//!     - increase priority of awaited children
+//!     - internal events as tasks
+//!
+//! - [ ] Benchmarks and tests
+//!     - TRAVLT? just make a synthetic benchmark... `thread::sleep(Duration::from_millis(10))`
+//!
+//! ## Extra
+//! - Resources can be used for different executor instances, at the same time, using PoolHandle and NetHandle.
+//! - Anchored nodes (so that 0 isnt special. Then executor makes sure anchored nodes are done before kill)
+//! - Mby do some box magic in Graph::output, so that MutPtr is not needed.
+//! - Allocator reusablility for dynamic graphs
+//! - Const graphs (lib.rs/phf)
+//! - Time-complexity hints
+//! - Static types for futures (allocate them on bump, and let node provide funktion pointer for polling)
+//! - Graph serialization (need runtime typechecking for graph hot-realoading)
+//! - Optional stack trace (basically already implemented this)
+//! - Check for cycles when building graph
+//! - Multiple backends for providing tasks (eg: shared object files, cranelift, fancy jit / hot-reloading)
+//! - specialized optimisations based on graph structure, when initilizing (fx: combine multiple nodes, that only have a signle parent, into one node)
+
 #![cfg(test)]
 #![feature(test)]
 #![feature(new_uninit)]
@@ -16,10 +74,10 @@ use std::{
 
 use buffer::Buffer;
 use serde::{Deserialize, Serialize};
-use workpool::{Pool, PoolHandle};
+use workpool::Pool;
 
 pub mod buffer;
-mod easy_api2;
+//mod easy_api2;
 pub mod error;
 pub mod mpmc;
 pub mod net;
@@ -39,16 +97,12 @@ pub unsafe trait Graph {
     fn task_mut(&mut self, id: usize) -> &mut BoxFuture;
 }
 
-pub struct NetHandle {
-    net: Sender<net::Event>,
-    graph: Arc<Executor>,
-}
-
 pub struct Executor {
     graph: *mut dyn Graph,
-    net: NetHandle,
-    pool: PoolHandle,
+    pool: Arc<Pool>,
 }
+unsafe impl Send for Executor {}
+unsafe impl Sync for Executor {}
 
 impl Executor {
     fn mpi_instance(&self) -> i32 {
@@ -89,71 +143,64 @@ impl Executor {
     fn assign_children_of(self: &Arc<Self>, node: &NodeId) -> Option<NodeId> {
         let children = self.children(node);
         let continue_with = children.last();
-        self.pool.assign(children.iter());
-        continue_with.copied()
+        self.pool.assign(children.iter().cloned());
+        continue_with.cloned()
     }
 
-    pub fn compute(self: &Arc<Self>, node: NodeId) {
+    pub fn compute(self: &Arc<Self>, node: &NodeId) {
         let waker = Arc::new(NilWaker).into();
         let mut cx = Context::from_waker(&waker);
 
-        let mut node = &self.nodes[node];
-
         loop {
             if DEBUG {
-                println!("{} compputing {}", node.mpi_instance, node.name)
+                println!("{} compputing {}", node.mpi_instance(), node.name())
             };
-            if node.done.load(Ordering::SeqCst) {
+            if node.0.done.load(Ordering::SeqCst) {
                 println!("already done");
                 let continue_with = self.assign_children_of(node);
 
                 node.net()
                     .send(net::Event::NodeDone {
-                        awaited: node.this_node,
+                        awaited: node.clone(),
                     })
                     .unwrap();
 
-                node.is_being_polled.store(false, Ordering::Release);
+                node.0.is_being_polled.store(false, Ordering::Release);
 
-                match continue_with {
+                match &continue_with {
                     Some(next) if next.try_poll() => node = next,
                     _ => return,
                 }
                 continue;
             }
 
-            if node.mpi_instance != self.mpi_instance() {
+            if node.mpi_instance() != self.mpi_instance() {
                 return;
             }
 
-            match unsafe { Pin::new(&mut *node.future.get()) }.poll(&mut cx) {
+            match unsafe { Pin::new(&mut (*self.graph).task_mut(node.this_node())) }.poll(&mut cx) {
                 Poll::Ready(()) => {
                     println!("=== READY ===");
-                    if node.this_node == 0 {
+                    if node.this_node() == 0 {
                         node.net().send(net::Event::Kill).unwrap()
                     }
-                    node.done.store(true, Ordering::SeqCst);
+                    node.0.done.store(true, Ordering::SeqCst);
                 }
 
                 Poll::Pending => {
                     // TODO: Push to global que
-                    let awaited = node.continue_to.load(Ordering::Acquire);
-                    if awaited >= 0 {
-                        let awaited = awaited as usize;
-                        if self.nodes[awaited].mpi_instance != self.mpi_instance() {
+                    if let Some(awaited) = node.0.continue_to {
+                        if awaited.mpi_instance() != self.mpi_instance() {
                             node.net().send(net::Event::AwaitNode { awaited }).unwrap();
                             return;
                         }
-                        node.is_being_polled.store(false, Ordering::Release);
+                        node.0.is_being_polled.store(false, Ordering::Release);
 
-                        if self.nodes[awaited]
-                            .is_being_polled
-                            .swap(true, Ordering::Acquire)
-                        {
+                        if awaited.try_poll() {
                             return;
                         }
 
-                        node = &self.nodes[awaited]
+                        node = &awaited
                     } else {
                         panic!("Pending nothing?");
                     }
@@ -182,8 +229,11 @@ pub struct Node {
     net_events: UnsafeCell<Option<Sender<net::Event>>>, // X
 }
 impl Node {
-    fn new<T: Serialize + Deserialize<'static> + Sync>(len: usize) -> Node {
+    pub fn new<T: Serialize + Deserialize<'static> + Sync>(len: usize) -> Node {
         todo!()
+    }
+    pub fn commit(self) -> NodeId {
+        NodeId(Arc::new(self))
     }
 }
 unsafe impl Send for Node {}
@@ -199,19 +249,6 @@ impl NodeId {
             awaited: awaited.clone(),
         }
     }
-    fn new<T: Serialize + Deserialize<'static> + Sync + 'static>(this_node: usize) -> Self {
-        NodeId(Arc::new(Node {
-            this_node,
-            awaited_by: RwLock::new(mpmc::Stack::new(1, 3).undoable()),
-            name: "NIL",
-            continue_to: None,
-            output: Buffer::new::<T>(),
-            done: AtomicBool::new(false),
-            is_being_polled: AtomicBool::new(false),
-            mpi_instance: 0,
-            net_events: UnsafeCell::new(None),
-        }))
-    }
 
     fn use_net(&self, net: Option<Sender<net::Event>>) {
         unsafe { (*self.0.net_events.get()) = net }
@@ -226,12 +263,20 @@ impl NodeId {
         unsafe { self.0.output.transmute_ptr_mut() }
     }
 
-    fn try_poll(self: &Arc<Self>) -> bool {
+    fn try_poll(self: &Self) -> bool {
         !self.0.is_being_polled.swap(true, Ordering::Acquire)
     }
 
     pub fn mpi_instance(&self) -> i32 {
         self.0.mpi_instance
+    }
+
+    pub fn name(&self) -> &'static str {
+        self.0.name
+    }
+
+    pub fn this_node(&self) -> usize {
+        self.0.this_node
     }
 }
 

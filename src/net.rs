@@ -67,6 +67,11 @@ pub struct Networker {
     awaited: HashMap<usize, NodeId>,
 }
 
+pub struct NetHandle {
+    net: Sender<Event>,
+    graph: Arc<Executor>,
+}
+
 impl Networker {
     pub fn run(&mut self) {
         let size = self.world.size();

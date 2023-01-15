@@ -1,7 +1,7 @@
 use std::{
     cell::UnsafeCell,
     sync::{
-        atomic::{AtomicIsize, AtomicU16, AtomicUsize, Ordering},
+        atomic::{AtomicIsize, AtomicU16, AtomicU8, AtomicUsize, Ordering},
         Arc, Mutex, Weak,
     },
     thread::{self, JoinHandle},
@@ -22,6 +22,10 @@ impl ThreadID {
 }
 
 pub struct Worker {
+    status: AtomicU8,
+    // status = 0: pending work (parked)
+    // status = 1: terminate thread
+    // status = 2: begin/doing work
     task: NodeId,
     prev_unoccupied: WorkerStack,
     this_thread: ThreadID,
@@ -30,9 +34,10 @@ pub struct Worker {
 impl Worker {
     pub fn new(home: ThreadID) -> Self {
         Self {
-            task: AtomicIsize::new(-3),
+            status: AtomicU8::new(1),
             prev_unoccupied: home.unoccupied(),
             this_thread: home,
+            task: Node::new::<()>(0).commit(),
         }
     }
 }
@@ -79,22 +84,22 @@ impl Pool {
                     let graph = graph
                         .upgrade()
                         .expect("Graph dropped before Pool was initialized");
-                    worker.task.store(-1, Ordering::Release);
+                    worker.status.store(0, Ordering::Release);
 
                     loop {
-                        let mut task = worker.task.load(Ordering::Acquire);
-                        while task == -1 {
+                        let mut status = worker.status.load(Ordering::Acquire);
+                        while status == 0 {
                             thread::park();
-                            task = worker.task.load(Ordering::Acquire);
+                            status = worker.status.load(Ordering::Acquire);
                         }
 
-                        if task == -2 {
+                        if status == 1 {
                             return;
                         }
 
                         pool.parked_threads.fetch_sub(1, Ordering::SeqCst);
-                        graph.compute(task as usize);
-                        worker.task.store(-1, Ordering::SeqCst);
+                        graph.compute(&worker.task);
+                        worker.status.store(0, Ordering::SeqCst);
 
                         lock(&pool.last_unoccupied).insert(worker.this_thread.clone(), &pool);
                         pool.parked_threads.fetch_add(1, Ordering::SeqCst);
@@ -111,9 +116,7 @@ impl Pool {
             }
         })
     }
-}
 
-impl PoolHandle {
     pub fn init(self: &Arc<Self>, mpi: i32) {
         unsafe { *self.mpi_instance.get() = mpi }
         for thread in &self.thread_handles {
@@ -122,7 +125,7 @@ impl PoolHandle {
         while self
             .worker_handles
             .iter()
-            .any(|w| w.task.load(Ordering::SeqCst) == -3)
+            .any(|w| w.status.load(Ordering::SeqCst) == 1)
         {}
     }
 
@@ -130,11 +133,11 @@ impl PoolHandle {
         while self
             .worker_handles
             .iter()
-            .any(|w| w.task.load(Ordering::SeqCst) >= 0)
+            .any(|w| w.status.load(Ordering::SeqCst) != 0)
         {}
 
         for n in 0..self.worker_handles.len() {
-            self.worker_handles[n].task.store(-2, Ordering::SeqCst);
+            self.worker_handles[n].status.store(1, Ordering::SeqCst);
             self.thread_handles[n].thread().unpark();
         }
 
@@ -163,11 +166,11 @@ impl PoolHandle {
     }
 
     // Executor tries to reuse same threads. But doesn't try to use same threads for the same tasks
-    pub fn assign<'a>(self: &Arc<Self>, task: impl IntoIterator<Item = &'a Arc<Node>>) {
+    pub fn assign(self: &Arc<Self>, task: impl IntoIterator<Item = NodeId>) {
         // TODO: Keep track of parked threads, and only take tasks, until all threads have been filled.
         let mut occupancy = lock(&self.last_unoccupied);
         for task in task {
-            if task.is_being_polled.swap(true, Ordering::Acquire) {
+            if task.try_poll() {
                 if DEBUG {
                     println!("  already being polled")
                 };
@@ -185,9 +188,8 @@ impl PoolHandle {
             let device = occupancy.pop(self);
             if let Some(device) = device {
                 let worker = &self.worker_handles[device.0];
-                worker
-                    .task
-                    .store(task.this_node as isize, Ordering::Release);
+                worker.task = task;
+                worker.status.store(2, Ordering::Release);
                 self.thread_handles[device.0].thread().unpark();
             } else {
                 panic!(
