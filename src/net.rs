@@ -4,13 +4,16 @@ use mpi::{
     traits::{AsDatatype, Communicator, Destination, Source},
 };
 use serde_derive::{Deserialize, Serialize};
-use std::sync::{
-    atomic::Ordering,
-    mpsc::{channel, sync_channel, Receiver, Sender},
-    Arc,
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::Ordering,
+        mpsc::{channel, Receiver, Sender},
+        Arc,
+    },
 };
 
-use crate::{Graph, DEBUG};
+use crate::{Executor, Graph, NodeId, DEBUG};
 
 // TODO: Make networking a task.
 // Strictly it would only need to be polled once a node has finished.
@@ -32,9 +35,9 @@ use crate::{Graph, DEBUG};
 // When send NodeReady, just serialize node.output once pr recipient.
 pub enum Event {
     Kill,
-    AwaitNode { awaited: usize },
-    NodeDone { awaited: usize },
-    Consumes { awaited: usize, at: i32 },
+    AwaitNode { awaited: NodeId },
+    NodeDone { awaited: NodeId },
+    Consumes { awaited: NodeId, at: i32 },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -59,8 +62,9 @@ pub struct Networker {
     events: Receiver<Event>,
     _universe: Universe,
     world: mpi::topology::SystemCommunicator,
-    graph: Arc<Graph>,
+    graph: Arc<Executor>,
     awaited_at: Vec<Vec<i32>>,
+    awaited: HashMap<usize, NodeId>,
 }
 
 impl Networker {
@@ -161,7 +165,7 @@ impl Networker {
                 self.graph.pool.assign([&self.graph.nodes[awaited]])
             }
             NodeReady { data, node } => {
-                let node = self.graph.nodes[node].clone();
+                let node = self.awaited[node].clone();
                 if node.is_being_polled.swap(true, Ordering::Acquire) {
                     panic!("NodeReady event for in-use node: {}", node.name);
                 }
@@ -184,7 +188,7 @@ impl Networker {
     }
 }
 
-pub fn instantiate(graph: Arc<Graph>) -> (Sender<Event>, Networker) {
+pub fn instantiate(graph: Arc<Executor>) -> (Sender<Event>, Networker) {
     let (universe, threading) = mpi::initialize_with_threading(mpi::Threading::Funneled).unwrap();
     if threading != mpi::Threading::Funneled {
         panic!("Only supports funneled mpi threading");
@@ -199,6 +203,7 @@ pub fn instantiate(graph: Arc<Graph>) -> (Sender<Event>, Networker) {
             events: r,
             world,
             graph,
+            awaited: HashMap::new(),
         },
     )
 }

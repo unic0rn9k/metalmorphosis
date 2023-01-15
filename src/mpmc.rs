@@ -93,7 +93,6 @@ impl<'a, T> IntoIterator for &'a mut Stack<T> {
 impl<'a, T> Iterator for StackIter<'a, T> {
     type Item = T;
 
-    // When doing getting multiple iterations, a single atomic operation can be used.
     fn next(&mut self) -> Option<Self::Item> {
         if self.1 == 0 {
             return None;

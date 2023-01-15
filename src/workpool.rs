@@ -7,7 +7,7 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use crate::{error::Result, net, Graph, Node, DEBUG};
+use crate::{error::Result, net, Executor, Graph, Node, NodeId, DEBUG};
 
 mod locked_occupancy;
 use locked_occupancy::*;
@@ -22,9 +22,9 @@ impl ThreadID {
 }
 
 pub struct Worker {
-    task: AtomicIsize,
+    task: NodeId,
     prev_unoccupied: WorkerStack,
-    home: ThreadID,
+    this_thread: ThreadID,
 }
 
 impl Worker {
@@ -32,7 +32,7 @@ impl Worker {
         Self {
             task: AtomicIsize::new(-3),
             prev_unoccupied: home.unoccupied(),
-            home,
+            this_thread: home,
         }
     }
 }
@@ -46,8 +46,13 @@ pub struct Pool {
 }
 unsafe impl Sync for Pool {}
 
+pub struct PoolHandle {
+    pool: Arc<Pool>,
+    graph: Arc<Executor>,
+}
+
 impl Pool {
-    pub fn new(graph: Weak<Graph>) -> Arc<Self> {
+    pub fn new(graph: Weak<Executor>) -> Arc<Self> {
         Arc::new_cyclic(|pool| {
             //let threads = 4;
             let threads = std::thread::available_parallelism().unwrap().into();
@@ -70,7 +75,7 @@ impl Pool {
                     let pool = pool
                         .upgrade()
                         .expect("Pool was dropped before thread was initialized");
-                    lock(&last_unoccupied).insert(worker.home.clone(), &pool);
+                    lock(&last_unoccupied).insert(worker.this_thread.clone(), &pool);
                     let graph = graph
                         .upgrade()
                         .expect("Graph dropped before Pool was initialized");
@@ -91,7 +96,7 @@ impl Pool {
                         graph.compute(task as usize);
                         worker.task.store(-1, Ordering::SeqCst);
 
-                        lock(&pool.last_unoccupied).insert(worker.home.clone(), &pool);
+                        lock(&pool.last_unoccupied).insert(worker.this_thread.clone(), &pool);
                         pool.parked_threads.fetch_add(1, Ordering::SeqCst);
                     }
                 }));
@@ -106,10 +111,11 @@ impl Pool {
             }
         })
     }
+}
 
+impl PoolHandle {
     pub fn init(self: &Arc<Self>, mpi: i32) {
         unsafe { *self.mpi_instance.get() = mpi }
-        // Some unholyness is still left tho
         for thread in &self.thread_handles {
             thread.thread().unpark();
         }
