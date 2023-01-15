@@ -2,7 +2,7 @@
 <img src="https://raw.githubusercontent.com/unic0rn9k/metalmorphosis/4th_refactor/logo.png" width="400"/>
 </div>
 
-[Benchmarks can be found here](benchmarks_og_bilag.md)
+Benchmarks can be found at [benchmarks_og_bilag.md](benchmarks_og_bilag.md)
 
 ### Definitions
 - Symbol: a type used to refer to a node,
@@ -30,12 +30,11 @@
     - reusing output in node would confuse executor
 
 - [ ] clean code (remove duplicate work)
-- [ ] stack-que for missed work
 - [ ] nicer API (ATLEAST for custom schedular)
-- [ ] sending directly on node.awaiter is ugly (also make sure they aren't cloned in parallel)
 - [ ] return Result everywhere
+- [ ] if a child is pushed to pool, but all threads are occupied, prefer to poll it from the thread of the parent
 
-- [ ] priority que.
+- [X] priority que.
     - Let users set priority
     - increase priority of awaited children
     - internal events as tasks
@@ -44,6 +43,7 @@
     - TRAVLT? just make a synthetic benchmark... `thread::sleep(Duration::from_millis(10))`
 
 ### Extra
+- Resources can be used for different executor instances, at the same time, using PoolHandle and NetHandle.
 - Anchored nodes (so that 0 isnt special. Then executor makes sure anchored nodes are done before kill)
 - Mby do some box magic in Graph::output, so that MutPtr is not needed.
 - Allocator reusablility for dynamic graphs
