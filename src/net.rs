@@ -1,6 +1,7 @@
 use mpi::{
     environment::Universe,
     request::WaitGuard,
+    topology::SystemCommunicator,
     traits::{AsDatatype, Communicator, Destination, Source},
 };
 use serde_derive::{Deserialize, Serialize};
@@ -61,7 +62,7 @@ use Message::*;
 pub struct Networker {
     events: Receiver<Event>,
     _universe: Universe,
-    world: mpi::topology::SystemCommunicator,
+    world: SystemCommunicator,
     graph: Arc<Executor>,
     awaited_at: Vec<Vec<i32>>,
     awaited: HashMap<usize, NodeId>,

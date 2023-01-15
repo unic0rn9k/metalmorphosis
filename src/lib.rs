@@ -4,15 +4,6 @@
 //!
 //! Benchmarks can be found at [benchmarks_og_bilag.md](benchmarks_og_bilag.md)
 //!
-//! ## Definitions
-//! - Symbol: a type used to refer to a node,
-//!   that can be bound to another node, returning a future to the output of a node.
-//!   (it lets you specify edges in the computation graph)
-//!
-//! - Dealocks will be caused by:
-//! `graph.attach_edge(Self::edge(graph));`,
-//! `graph.spawn(F(Self::edge(graph)));`.
-//!
 //! ## TODO
 //! - [X] Type checking
 //! - [X] Buffers
@@ -89,7 +80,8 @@ pub const DEBUG: bool = true;
 
 /// # Safety
 /// Graphs might be accessed mutably in parallel, even tho this is unsafe.
-/// This will only be done for the IndexMut operation. The executor will never access the same element at the same time.
+/// This will only be done for the IndexMut operation.
+/// The executor will never access the same element, in parallel, assuming there are no duplicate `NodeId`s
 pub unsafe trait Graph {
     fn len(&self) -> usize;
 
@@ -123,10 +115,10 @@ impl Executor {
                 //    reader.name,
                 //    self.mpi_instance()
                 //);
-                if reader.mpi_instance() != self.mpi_instance() {
+                if reader.mpi_instance != self.mpi_instance() {
                     net.send(net::Event::Consumes {
                         awaited: node.clone(),
-                        at: reader.mpi_instance(),
+                        at: reader.mpi_instance,
                     })
                     .unwrap();
                     return None;
@@ -153,7 +145,7 @@ impl Executor {
 
         loop {
             if DEBUG {
-                println!("{} compputing {}", node.mpi_instance(), node.name())
+                println!("Compputing {node:?}")
             };
             if node.0.done.load(Ordering::SeqCst) {
                 println!("already done");
@@ -174,14 +166,14 @@ impl Executor {
                 continue;
             }
 
-            if node.mpi_instance() != self.mpi_instance() {
+            if node.mpi_instance != self.mpi_instance() {
                 return;
             }
 
-            match unsafe { Pin::new(&mut (*self.graph).task_mut(node.this_node())) }.poll(&mut cx) {
+            match unsafe { Pin::new(&mut (*self.graph).task_mut(node.this_node)) }.poll(&mut cx) {
                 Poll::Ready(()) => {
                     println!("=== READY ===");
-                    if node.this_node() == 0 {
+                    if node.this_node == 0 {
                         node.net().send(net::Event::Kill).unwrap()
                     }
                     node.0.done.store(true, Ordering::SeqCst);
@@ -190,7 +182,7 @@ impl Executor {
                 Poll::Pending => {
                     // TODO: Push to global que
                     if let Some(awaited) = node.0.continue_to {
-                        if awaited.mpi_instance() != self.mpi_instance() {
+                        if awaited.mpi_instance != self.mpi_instance() {
                             node.net().send(net::Event::AwaitNode { awaited }).unwrap();
                             return;
                         }
@@ -235,6 +227,23 @@ impl Node {
     pub fn commit(self) -> NodeId {
         NodeId(Arc::new(self))
     }
+
+    fn use_net(&self, net: Option<Sender<net::Event>>) {
+        unsafe { (*self.net_events.get()) = net }
+    }
+
+    fn net(&self) -> Sender<net::Event> {
+        unsafe { (*self.net_events.get()).clone().expect("Network not set") }
+    }
+
+    // If this was not in Node, then check associated with downcasting would not be required.
+    fn output<T: 'static>(&self) -> *mut T {
+        unsafe { self.output.transmute_ptr_mut() }
+    }
+
+    fn try_poll(self: &Self) -> bool {
+        !self.is_being_polled.swap(true, Ordering::Acquire)
+    }
 }
 unsafe impl Send for Node {}
 unsafe impl Sync for Node {}
@@ -249,34 +258,23 @@ impl NodeId {
             awaited: awaited.clone(),
         }
     }
+}
 
-    fn use_net(&self, net: Option<Sender<net::Event>>) {
-        unsafe { (*self.0.net_events.get()) = net }
+impl std::fmt::Debug for NodeId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Node{{#{}@{} : {}}}",
+            self.this_node, self.mpi_instance, self.name
+        )
     }
+}
 
-    fn net(&self) -> Sender<net::Event> {
-        unsafe { (*self.0.net_events.get()).clone().expect("Network not set") }
-    }
+impl std::ops::Deref for NodeId {
+    type Target = Node;
 
-    // If this was not in Node, then check associated with downcasting would not be required.
-    fn output<T: 'static>(&self) -> *mut T {
-        unsafe { self.0.output.transmute_ptr_mut() }
-    }
-
-    fn try_poll(self: &Self) -> bool {
-        !self.0.is_being_polled.swap(true, Ordering::Acquire)
-    }
-
-    pub fn mpi_instance(&self) -> i32 {
-        self.0.mpi_instance
-    }
-
-    pub fn name(&self) -> &'static str {
-        self.0.name
-    }
-
-    pub fn this_node(&self) -> usize {
-        self.0.this_node
+    fn deref(&self) -> &Self::Target {
+        self.0.deref()
     }
 }
 

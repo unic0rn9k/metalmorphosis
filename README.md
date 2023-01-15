@@ -4,15 +4,6 @@
 
 Benchmarks can be found at [benchmarks_og_bilag.md](benchmarks_og_bilag.md)
 
-### Definitions
-- Symbol: a type used to refer to a node,
-  that can be bound to another node, returning a future to the output of a node.
-  (it lets you specify edges in the computation graph)
-
-- Dealocks will be caused by:
-`graph.attach_edge(Self::edge(graph));`,
-`graph.spawn(F(Self::edge(graph)));`.
-
 ### TODO
 - [X] Type checking
 - [X] Buffers
