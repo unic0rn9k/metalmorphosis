@@ -29,22 +29,33 @@ impl Buffer {
         }
     }
 
-    pub fn serialize(&self) -> Vec<u8> {
+    pub unsafe fn serialize(&self) -> Vec<u8> {
         (self.se)(self.ptr()).expect("Buffer serialization failed")
     }
 
-    pub fn deserialize(&mut self, data: &[u8]) {
+    pub unsafe fn deserialize(&self, data: &[u8]) {
         (self.de)(data, self.mut_ptr()).expect("Buffer deserialization failed")
     }
 
-    pub fn ptr(&self) -> *const () {
-        unsafe { transmute::<&dyn Any, (*const (), &())>(unsafe { (*self.data.get()).as_ref() }).0 }
+    pub unsafe fn ptr(&self) -> *const () {
+        transmute::<&dyn Any, (*const (), &())>(&*self.data.get()).0
     }
-    pub fn mut_ptr(&mut self) -> *mut () {
-        unsafe { transmute::<&mut dyn Any, (*mut (), &())>(self.data.get_mut().as_mut()).0 }
+    pub unsafe fn mut_ptr(&self) -> *mut () {
+        transmute::<&mut dyn Any, (*mut (), &())>(&mut *self.data.get()).0
     }
 
-    pub unsafe fn transmute_ptr_mut<T: 'static>(&self) -> *mut T {
+    pub unsafe fn downcast_ptr_mut<T: 'static>(&self) -> *mut T {
+        unsafe {
+            (*self.data.get()).downcast_mut().unwrap_or_else(|| {
+                panic!(
+                    "Tried to get output with incorrect runtime type. Expected {}",
+                    type_name::<T>()
+                )
+            })
+        }
+    }
+
+    pub unsafe fn downcast_ptr<T: 'static>(&self) -> *const T {
         unsafe {
             (*self.data.get()).downcast_mut().unwrap_or_else(|| {
                 panic!(

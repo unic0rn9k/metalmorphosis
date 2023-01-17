@@ -4,13 +4,13 @@ use std::sync::{
     Arc,
 };
 
-use crate::{net::Event, Graph};
+use crate::{net::Event, Executor, Graph};
 
-pub struct Networker(Receiver<Event>, Arc<Graph>);
+pub struct Networker(Receiver<Event>, Arc<Executor>);
 
 impl Networker {
     pub fn run(&mut self) {
-        while !self.1.nodes[0].done.load(Ordering::SeqCst) {
+        while self.1.pool.live_threads() != 0 {
             std::hint::spin_loop()
         }
     }
@@ -22,7 +22,7 @@ impl Networker {
     }
 }
 
-pub fn instantiate(graph: Arc<Graph>) -> (Sender<Event>, Networker) {
+pub fn instantiate(graph: Arc<Executor>) -> (Sender<Event>, Networker) {
     let (s, r) = channel();
     (s, Networker(r, graph))
 }

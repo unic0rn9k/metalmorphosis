@@ -26,10 +26,11 @@ pub struct Worker {
     // status = 0: pending work (parked)
     // status = 1: terminate thread
     // status = 2: begin/doing work
-    task: NodeId,
+    task: UnsafeCell<Option<NodeId>>,
     prev_unoccupied: WorkerStack,
     this_thread: ThreadID,
 }
+unsafe impl Sync for Worker {}
 
 impl Worker {
     pub fn new(home: ThreadID) -> Self {
@@ -37,7 +38,7 @@ impl Worker {
             status: AtomicU8::new(1),
             prev_unoccupied: home.unoccupied(),
             this_thread: home,
-            task: Node::new::<()>(0).commit(),
+            task: UnsafeCell::new(None),
         }
     }
 }
@@ -47,7 +48,7 @@ pub struct Pool {
     last_unoccupied: Arc<Mutex<WorkerStack>>,
     worker_handles: Vec<Arc<Worker>>,
     thread_handles: Vec<JoinHandle<()>>,
-    pub parked_threads: AtomicUsize,
+    parked_threads: AtomicUsize,
 }
 unsafe impl Sync for Pool {}
 
@@ -59,8 +60,8 @@ pub struct PoolHandle {
 impl Pool {
     pub fn new(graph: Weak<Executor>) -> Arc<Self> {
         Arc::new_cyclic(|pool| {
-            //let threads = 4;
-            let threads = std::thread::available_parallelism().unwrap().into();
+            let threads = 4;
+            //let threads = std::thread::available_parallelism().unwrap().into();
             let mut worker_handles = vec![];
             let mut thread_handles = vec![];
             let last_unoccupied = Arc::new(Mutex::new(WorkerStack::new()));
@@ -97,12 +98,15 @@ impl Pool {
                             return;
                         }
 
-                        pool.parked_threads.fetch_sub(1, Ordering::SeqCst);
-                        graph.compute(&worker.task);
-                        worker.status.store(0, Ordering::SeqCst);
+                        pool.parked_threads.fetch_sub(1, Ordering::Release);
+                        match unsafe { (*worker.task.get()).clone() } {
+                            Some(task) => graph.compute(task),
+                            None => panic!("What the birds"),
+                        }
+                        worker.status.store(0, Ordering::Release);
 
                         lock(&pool.last_unoccupied).insert(worker.this_thread.clone(), &pool);
-                        pool.parked_threads.fetch_add(1, Ordering::SeqCst);
+                        pool.parked_threads.fetch_add(1, Ordering::Release);
                     }
                 }));
             }
@@ -133,11 +137,11 @@ impl Pool {
         while self
             .worker_handles
             .iter()
-            .any(|w| w.status.load(Ordering::SeqCst) != 0)
+            .any(|w| w.status.load(Ordering::Acquire) != 0)
         {}
 
         for n in 0..self.worker_handles.len() {
-            self.worker_handles[n].status.store(1, Ordering::SeqCst);
+            self.worker_handles[n].status.store(1, Ordering::Release);
             self.thread_handles[n].thread().unpark();
         }
 
@@ -188,8 +192,8 @@ impl Pool {
             let device = occupancy.pop(self);
             if let Some(device) = device {
                 let worker = &self.worker_handles[device.0];
-                worker.task = task;
-                worker.status.store(2, Ordering::Release);
+                unsafe { *worker.task.get() = Some(task) }
+                worker.status.store(2, Ordering::SeqCst);
                 self.thread_handles[device.0].thread().unpark();
             } else {
                 panic!(
@@ -203,5 +207,10 @@ impl Pool {
 
     pub fn num_threads(self: &Arc<Self>) -> usize {
         self.thread_handles.len()
+    }
+
+    pub fn live_threads(self: &Arc<Self>) -> usize {
+        let n = self.num_threads();
+        n - self.parked_threads.load(Ordering::Acquire).min(n)
     }
 }

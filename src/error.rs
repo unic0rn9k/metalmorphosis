@@ -4,7 +4,7 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum Error {
-    //    #[error("Error sending data to local executor `{0}`")]
+    //    #[error("Error sending data to local Executor `{0}`")]
     //    SendError(SendError<Signal<'a>>),
     #[error(transparent)]
     Bincode(#[from] bincode::Error),

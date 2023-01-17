@@ -54,10 +54,11 @@
 use std::{
     cell::UnsafeCell,
     future::Future,
+    marker::PhantomData,
     pin::Pin,
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc::Sender,
+        mpsc::{Receiver, Sender},
         Arc, RwLock,
     },
     task::{Context, Poll, Wake},
@@ -69,6 +70,8 @@ use workpool::Pool;
 
 pub mod buffer;
 //mod easy_api2;
+pub mod dummy_net;
+mod easy_api2;
 pub mod error;
 pub mod mpmc;
 pub mod net;
@@ -90,15 +93,22 @@ pub unsafe trait Graph {
 }
 
 pub struct Executor {
-    graph: *mut dyn Graph,
+    graph: UnsafeCell<Box<dyn Graph>>,
     pool: Arc<Pool>,
 }
 unsafe impl Send for Executor {}
 unsafe impl Sync for Executor {}
 
 impl Executor {
+    pub unsafe fn new(graph: impl Graph + 'static) -> Arc<Self> {
+        Arc::new_cyclic(|exe| Executor {
+            graph: UnsafeCell::new(Box::new(graph)),
+            pool: Pool::new(exe.clone()),
+        })
+    }
+
     fn mpi_instance(&self) -> i32 {
-        todo!()
+        self.pool.mpi_instance()
     }
 
     fn children(self: &Arc<Self>, node: &NodeId) -> Vec<NodeId> {
@@ -139,7 +149,7 @@ impl Executor {
         continue_with.cloned()
     }
 
-    pub fn compute(self: &Arc<Self>, node: &NodeId) {
+    pub fn compute(self: &Arc<Self>, mut node: NodeId) {
         let waker = Arc::new(NilWaker).into();
         let mut cx = Context::from_waker(&waker);
 
@@ -147,9 +157,9 @@ impl Executor {
             if DEBUG {
                 println!("Compputing {node:?}")
             };
-            if node.0.done.load(Ordering::SeqCst) {
+            if node.0.done.load(Ordering::Acquire) {
                 println!("already done");
-                let continue_with = self.assign_children_of(node);
+                let continue_with = self.assign_children_of(&node);
 
                 node.net()
                     .send(net::Event::NodeDone {
@@ -159,7 +169,7 @@ impl Executor {
 
                 node.0.is_being_polled.store(false, Ordering::Release);
 
-                match &continue_with {
+                match continue_with {
                     Some(next) if next.try_poll() => node = next,
                     _ => return,
                 }
@@ -170,18 +180,20 @@ impl Executor {
                 return;
             }
 
-            match unsafe { Pin::new(&mut (*self.graph).task_mut(node.this_node)) }.poll(&mut cx) {
+            match unsafe { Pin::new(&mut (*self.graph.get()).task_mut(node.this_node)) }
+                .poll(&mut cx)
+            {
                 Poll::Ready(()) => {
                     println!("=== READY ===");
                     if node.this_node == 0 {
                         node.net().send(net::Event::Kill).unwrap()
                     }
-                    node.0.done.store(true, Ordering::SeqCst);
+                    node.0.done.store(true, Ordering::Release);
                 }
 
                 Poll::Pending => {
                     // TODO: Push to global que
-                    if let Some(awaited) = node.0.continue_to {
+                    if let Some(awaited) = unsafe { (*node.0.continue_to.get()).clone() } {
                         if awaited.mpi_instance != self.mpi_instance() {
                             node.net().send(net::Event::AwaitNode { awaited }).unwrap();
                             return;
@@ -192,7 +204,7 @@ impl Executor {
                             return;
                         }
 
-                        node = &awaited
+                        node = awaited
                     } else {
                         panic!("Pending nothing?");
                     }
@@ -200,18 +212,37 @@ impl Executor {
             }
         }
     }
-}
 
-pub struct Symbol {
-    awaiter: NodeId,
-    awaited: NodeId,
+    pub fn realize(self: &Arc<Self>, leafs: &[NodeId]) {
+        self.pool.init(0);
+
+        self.pool.assign(leafs.iter().filter_map(|n| {
+            if n.mpi_instance == self.mpi_instance() {
+                println!("leaf: {n:?}");
+                Some(n.clone())
+            } else {
+                None
+            }
+        }));
+    }
+
+    pub fn kill(self: Arc<Self>, hold_on: Receiver<net::Event>) {
+        self.pool.finish();
+        drop(hold_on);
+        match Arc::try_unwrap(self) {
+            Ok(this) => this.pool.kill(),
+            Err(s) => panic!(
+                "Unable to gracefully kill graph execution, because there exists {} other references to it",
+                Arc::strong_count(&s)
+            ),
+        }
+    }
 }
 
 #[repr(align(128))]
 pub struct Node {
-    executor: Arc<Executor>,
     name: &'static str,
-    continue_to: Option<NodeId>,
+    continue_to: UnsafeCell<Option<NodeId>>,
     awaited_by: RwLock<mpmc::UndoStack<NodeId>>,
     this_node: usize,
     output: Buffer,
@@ -221,14 +252,24 @@ pub struct Node {
     net_events: UnsafeCell<Option<Sender<net::Event>>>, // X
 }
 impl Node {
-    pub fn new<T: Serialize + Deserialize<'static> + Sync>(len: usize) -> Node {
-        todo!()
+    pub fn new<T: Serialize + Deserialize<'static> + Sync + 'static>(this_node: usize) -> Node {
+        Node {
+            this_node,
+            awaited_by: RwLock::new(mpmc::Stack::new(1, 3).undoable()),
+            name: "NIL",
+            continue_to: UnsafeCell::new(None),
+            output: Buffer::new::<T>(),
+            done: AtomicBool::new(false),
+            is_being_polled: AtomicBool::new(false),
+            mpi_instance: 0,
+            net_events: UnsafeCell::new(None),
+        }
     }
     pub fn commit(self) -> NodeId {
         NodeId(Arc::new(self))
     }
 
-    fn use_net(&self, net: Option<Sender<net::Event>>) {
+    pub unsafe fn use_net(&self, net: Option<Sender<net::Event>>) {
         unsafe { (*self.net_events.get()) = net }
     }
 
@@ -237,36 +278,49 @@ impl Node {
     }
 
     // If this was not in Node, then check associated with downcasting would not be required.
-    fn output<T: 'static>(&self) -> *mut T {
-        unsafe { self.output.transmute_ptr_mut() }
+    pub fn output<T: 'static>(&self) -> *mut T {
+        unsafe { self.output.downcast_ptr_mut() }
     }
 
     fn try_poll(self: &Self) -> bool {
-        !self.is_being_polled.swap(true, Ordering::Acquire)
+        self.is_being_polled.swap(true, Ordering::Acquire)
+    }
+
+    pub fn checkpoint(&self) {
+        self.awaited_by.write().unwrap().checkpoint()
+    }
+    pub fn respawn(&self) {
+        while !self.done.load(Ordering::Acquire) {}
+        while self.try_poll() {}
+        self.awaited_by.write().unwrap().undo();
+        self.is_being_polled.store(false, Ordering::Release)
     }
 }
 unsafe impl Send for Node {}
 unsafe impl Sync for Node {}
 
+pub struct Symbol<T> {
+    awaiter: NodeId,
+    awaited: NodeId,
+    marker: PhantomData<T>,
+}
+
 #[derive(Clone)]
 pub struct NodeId(Arc<Node>);
 
 impl NodeId {
-    pub fn edge_from(&self, awaited: &Self) -> Symbol {
+    pub unsafe fn edge_from<T>(self, awaited: Self) -> Symbol<T> {
         Symbol {
-            awaiter: self.clone(),
-            awaited: awaited.clone(),
+            awaiter: self,
+            awaited,
+            marker: PhantomData,
         }
     }
 }
 
 impl std::fmt::Debug for NodeId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Node{{#{}@{} : {}}}",
-            self.this_node, self.mpi_instance, self.name
-        )
+        write!(f, "#{}@{}-{}", self.this_node, self.mpi_instance, self.name)
     }
 }
 
@@ -282,5 +336,38 @@ struct NilWaker;
 impl Wake for NilWaker {
     fn wake(self: Arc<Self>) {
         todo!("Wake me up inside!")
+    }
+}
+
+pub struct Reader<T>(pub *const T);
+unsafe impl<T> Send for Reader<T> {}
+
+impl<T: 'static> Future for Symbol<T> {
+    type Output = Reader<T>;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let Self {
+            awaited, awaiter, ..
+        } = &*self;
+
+        if awaited.done.load(Ordering::Acquire) {
+            unsafe { *awaiter.continue_to.get() = None }
+            unsafe { Poll::Ready(Reader(awaited.output.downcast_ptr())) }
+        } else {
+            if unsafe { &*awaiter.continue_to.get() }
+                .as_ref()
+                .map(|node| node.this_node)
+                == Some(self.awaited.this_node)
+            {
+                return Poll::Pending;
+            }
+            unsafe { *awaiter.continue_to.get() = Some(awaiter.clone()) }
+
+            awaited.awaited_by.read().unwrap().push(awaiter.clone(), 1);
+            Poll::Pending
+        }
     }
 }

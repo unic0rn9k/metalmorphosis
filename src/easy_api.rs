@@ -338,7 +338,7 @@ mod test {
                 // if you just change the type, and not the data, it should be zero-cost
             }
 
-            // executor should se that this node has multiple sources, and should then try to distribute the work.
+            // Executor should se that this node has multiple sources, and should then try to distribute the work.
             // it shouldn't assign nodes to threads, if the nodes have pending sources that are already being processed.
             //
             // if a node checks its reader while being polled, and the reader is being polled on another device,

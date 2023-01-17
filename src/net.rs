@@ -64,7 +64,7 @@ pub struct Networker {
     _universe: Universe,
     world: SystemCommunicator,
     graph: Arc<Executor>,
-    awaited_at: Vec<Vec<i32>>,
+    awaited_at: HashMap<usize, Vec<i32>>,
     awaited: HashMap<usize, NodeId>,
 }
 
@@ -86,6 +86,7 @@ impl Networker {
 
                 loop {
                     if let Ok(internal_event) = self.events.try_recv() {
+                        let at;
                         let (dst, msg) = match internal_event {
                             Event::Kill => {
                                 for n in 0..size {
@@ -95,27 +96,40 @@ impl Networker {
                                 return true;
                             }
 
-                            Event::AwaitNode { awaited } => (
-                                std::slice::from_ref(&self.graph.nodes[awaited].mpi_instance),
-                                AwaitNode { awaited }.serialize(),
-                            ),
+                            Event::AwaitNode { awaited } => {
+                                at = awaited.mpi_instance;
+                                self.awaited.insert(awaited.this_node, awaited.clone());
+                                (
+                                    std::slice::from_ref(&at),
+                                    AwaitNode {
+                                        awaited: awaited.this_node,
+                                    }
+                                    .serialize(),
+                                )
+                            }
 
                             Event::NodeDone { awaited } => unsafe {
-                                println!("{awaited} done at {}", self.world.rank());
-                                let node = &self.graph.nodes[awaited];
+                                println!("net event: {awaited:?} done");
+                                let node = awaited.this_node;
                                 (
-                                    &self.awaited_at[awaited][..],
+                                    match self.awaited_at.get(&node) {
+                                        Some(awaiters) => &awaiters[..],
+                                        _ => continue,
+                                    },
                                     NodeReady {
-                                        data: (*node.output.get()).serialize(),
-                                        node: node.this_node,
+                                        data: awaited.output.serialize(),
+                                        node,
                                     }
                                     .serialize(),
                                 )
                             },
 
                             Event::Consumes { awaited, at } => {
-                                println!("C... {awaited} awaited at {at}");
-                                self.awaited_at[awaited].push(at);
+                                println!("net event: {awaited:?} awaited");
+                                self.awaited_at
+                                    .entry(awaited.this_node)
+                                    .or_insert(vec![])
+                                    .push(at);
                                 continue;
                             }
                         };
@@ -161,23 +175,22 @@ impl Networker {
             AwaitNode { awaited } => {
                 if DEBUG {
                     println!(
-                        "mpi:{} awaited {}",
+                        "net event: #{} awaited @{}",
+                        awaited,
                         self.graph.mpi_instance(),
-                        self.graph.nodes[awaited].name,
                     )
                 };
-                self.awaited_at[awaited].push(src);
-
-                self.graph.pool.assign([&self.graph.nodes[awaited]])
+                self.awaited_at.entry(awaited).or_insert(vec![]).push(src);
+                //self.graph.pool.assign([awaited])
             }
             NodeReady { data, node } => {
-                let node = self.awaited[node].clone();
+                let node = self.awaited[&node].clone();
                 if node.is_being_polled.swap(true, Ordering::Acquire) {
                     panic!("NodeReady event for in-use node: {}", node.name);
                 }
 
                 node.done.store(true, Ordering::Release);
-                unsafe { (*node.output.get()).deserialize(&data) }
+                unsafe { node.output.deserialize(&data) }
 
                 //self.graph.print();
                 self.graph.assign_children_of(&node);
@@ -205,7 +218,7 @@ pub fn instantiate(graph: Arc<Executor>) -> (Sender<Event>, Networker) {
         s,
         Networker {
             _universe: universe,
-            awaited_at: vec![vec![]; graph.nodes.len()],
+            awaited_at: HashMap::new(),
             events: r,
             world,
             graph,
