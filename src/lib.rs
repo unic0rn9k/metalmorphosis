@@ -55,9 +55,10 @@ use std::{
     cell::UnsafeCell,
     future::Future,
     marker::PhantomData,
+    ops::{Deref, DerefMut},
     pin::Pin,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{fence, AtomicBool, Ordering},
         mpsc::{Receiver, Sender},
         Arc, RwLock,
     },
@@ -85,16 +86,15 @@ pub const DEBUG: bool = true;
 /// Graphs might be accessed mutably in parallel, even tho this is unsafe.
 /// This will only be done for the IndexMut operation.
 /// The executor will never access the same element, in parallel, assuming there are no duplicate `NodeId`s
-pub unsafe trait Graph {
+pub trait Graph {
     fn len(&self) -> usize;
-
-    fn task(&self, id: usize) -> &BoxFuture;
-    fn task_mut(&mut self, id: usize) -> &mut BoxFuture;
+    fn task(&self, id: usize) -> Box<dyn DerefMut<Target = BoxFuture> + '_>;
 }
 
 pub struct Executor {
-    graph: UnsafeCell<Box<dyn Graph>>,
+    graph: Box<dyn Graph>,
     pool: Arc<Pool>,
+    leftovers: mpmc::Stack<NodeId>,
 }
 unsafe impl Send for Executor {}
 unsafe impl Sync for Executor {}
@@ -102,8 +102,9 @@ unsafe impl Sync for Executor {}
 impl Executor {
     pub unsafe fn new(graph: impl Graph + 'static) -> Arc<Self> {
         Arc::new_cyclic(|exe| Executor {
-            graph: UnsafeCell::new(Box::new(graph)),
+            graph: Box::new(graph),
             pool: Pool::new(exe.clone()),
+            leftovers: mpmc::Stack::new(100, 2),
         })
     }
 
@@ -134,7 +135,7 @@ impl Executor {
                     return None;
                 }
                 // TODO: Don't assign it if its already done.
-                if reader.0.done.load(Ordering::Acquire) {
+                if reader.0.done.load(Ordering::SeqCst) {
                     return None;
                 }
                 Some(reader)
@@ -157,7 +158,7 @@ impl Executor {
             if DEBUG {
                 println!("Compputing {node:?}")
             };
-            if node.0.done.load(Ordering::Acquire) {
+            if node.0.done.load(Ordering::SeqCst) {
                 println!("already done");
                 let continue_with = self.assign_children_of(&node);
 
@@ -167,10 +168,10 @@ impl Executor {
                     })
                     .unwrap();
 
-                node.0.is_being_polled.store(false, Ordering::Release);
+                node.0.is_being_polled.store(false, Ordering::SeqCst);
 
                 match continue_with {
-                    Some(next) if next.try_poll() => node = next,
+                    Some(next) if !next.try_poll() => node = next,
                     _ => return,
                 }
                 continue;
@@ -180,30 +181,32 @@ impl Executor {
                 return;
             }
 
-            match unsafe { Pin::new(&mut (*self.graph.get()).task_mut(node.this_node)) }
-                .poll(&mut cx)
+            //if self.pool.paused.load(Ordering::SeqCst) {
+            //    return;
+            //}
+            match Pin::new(&mut self.graph.task(node.this_node).deref_mut().as_mut()).poll(&mut cx)
             {
                 Poll::Ready(()) => {
                     println!("=== READY ===");
                     if node.this_node == 0 {
                         node.net().send(net::Event::Kill).unwrap()
                     }
-                    node.0.done.store(true, Ordering::Release);
+                    node.0.done.store(true, Ordering::SeqCst);
                 }
 
                 Poll::Pending => {
-                    // TODO: Push to global que
                     if let Some(awaited) = unsafe { (*node.0.continue_to.get()).clone() } {
                         if awaited.mpi_instance != self.mpi_instance() {
                             node.net().send(net::Event::AwaitNode { awaited }).unwrap();
                             return;
                         }
-                        node.0.is_being_polled.store(false, Ordering::Release);
+                        node.0.is_being_polled.store(false, Ordering::SeqCst);
 
                         if awaited.try_poll() {
                             return;
                         }
 
+                        //self.leftovers.push(node, 0);
                         node = awaited
                     } else {
                         panic!("Pending nothing?");
@@ -255,7 +258,7 @@ impl Node {
     pub fn new<T: Serialize + Deserialize<'static> + Sync + 'static>(this_node: usize) -> Node {
         Node {
             this_node,
-            awaited_by: RwLock::new(mpmc::Stack::new(1, 3).undoable()),
+            awaited_by: RwLock::new(mpmc::Stack::new(100, 3).undoable()),
             name: "NIL",
             continue_to: UnsafeCell::new(None),
             output: Buffer::new::<T>(),
@@ -283,17 +286,23 @@ impl Node {
     }
 
     fn try_poll(self: &Self) -> bool {
-        self.is_being_polled.swap(true, Ordering::Acquire)
+        self.is_being_polled.swap(true, Ordering::SeqCst)
     }
 
     pub fn checkpoint(&self) {
         self.awaited_by.write().unwrap().checkpoint()
     }
     pub fn respawn(&self) {
-        while !self.done.load(Ordering::Acquire) {}
+        while !self.done.load(Ordering::SeqCst) {}
+        println!("-");
         while self.try_poll() {}
+        println!("|");
         self.awaited_by.write().unwrap().undo();
-        self.is_being_polled.store(false, Ordering::Release)
+        println!("/");
+        self.done.store(false, Ordering::SeqCst);
+        println!(".");
+        fence(Ordering::SeqCst);
+        self.is_being_polled.store(false, Ordering::SeqCst);
     }
 }
 unsafe impl Send for Node {}
@@ -353,7 +362,7 @@ impl<T: 'static> Future for Symbol<T> {
             awaited, awaiter, ..
         } = &*self;
 
-        if awaited.done.load(Ordering::Acquire) {
+        if awaited.done.load(Ordering::SeqCst) {
             unsafe { *awaiter.continue_to.get() = None }
             unsafe { Poll::Ready(Reader(awaited.output.downcast_ptr())) }
         } else {

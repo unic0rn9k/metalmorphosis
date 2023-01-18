@@ -10,9 +10,7 @@ pub struct Networker(Receiver<Event>, Arc<Executor>);
 
 impl Networker {
     pub fn run(&mut self) {
-        while self.1.pool.live_threads() != 0 {
-            std::hint::spin_loop()
-        }
+        while self.1.pool.live_threads() != 0 {}
     }
     pub fn rank(&self) -> i32 {
         0

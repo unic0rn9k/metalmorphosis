@@ -48,13 +48,14 @@ impl<T: Clone> Stack<T> {
     pub fn push_extend(&mut self, val: T) {
         self.capacity += 1;
         self.nodes.push(StackSlot(UnsafeCell::new(Some(val))));
-        self.next.fetch_add(1, Ordering::Relaxed);
+        self.next.fetch_add(1, Ordering::SeqCst);
     }
 
     pub fn push(&self, val: T, p: usize) {
+        println!("STACK ADDR: {:?}", self as *const _);
         assert!(p < self.priorities);
-        let i = self.next.fetch_add(1, Ordering::Relaxed);
-        assert!(i < self.capacity);
+        let i = self.next.fetch_add(1, Ordering::SeqCst);
+        assert!(i < self.capacity, "cap: {}, i: {}", self.capacity, i);
         unsafe { *self.nodes[i + self.capacity * p].0.get() = Some(val) };
     }
 
@@ -85,7 +86,7 @@ impl<'a, T> IntoIterator for &'a mut Stack<T> {
     fn into_iter(self) -> Self::IntoIter {
         StackIter(
             self,
-            self.next.load(Ordering::Relaxed) + self.capacity * (self.priorities - 1),
+            self.next.load(Ordering::SeqCst) + self.capacity * (self.priorities - 1),
         )
     }
 }
@@ -109,7 +110,7 @@ impl<'a, T> Drop for StackIter<'a, T> {
     fn drop(&mut self) {
         self.0
             .next
-            .store(self.1 % self.0.capacity, Ordering::Relaxed)
+            .store(self.1 % self.0.capacity, Ordering::SeqCst)
     }
 }
 
@@ -119,7 +120,7 @@ impl<T: Clone> Clone for Stack<T> {
             priorities: self.priorities,
             capacity: self.capacity,
             nodes: self.nodes.clone(),
-            next: AtomicUsize::new(self.next.load(Ordering::Relaxed)),
+            next: AtomicUsize::new(self.next.load(Ordering::SeqCst)),
         }
     }
 }

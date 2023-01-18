@@ -1,7 +1,7 @@
 use std::{
     cell::UnsafeCell,
     sync::{
-        atomic::{AtomicIsize, AtomicU16, AtomicU8, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicIsize, AtomicU16, AtomicU8, AtomicUsize, Ordering},
         Arc, Mutex, Weak,
     },
     thread::{self, JoinHandle},
@@ -49,6 +49,7 @@ pub struct Pool {
     worker_handles: Vec<Arc<Worker>>,
     thread_handles: Vec<JoinHandle<()>>,
     parked_threads: AtomicUsize,
+    pub paused: AtomicBool,
 }
 unsafe impl Sync for Pool {}
 
@@ -85,28 +86,31 @@ impl Pool {
                     let graph = graph
                         .upgrade()
                         .expect("Graph dropped before Pool was initialized");
-                    worker.status.store(0, Ordering::Release);
+                    worker.status.store(0, Ordering::SeqCst);
 
                     loop {
-                        let mut status = worker.status.load(Ordering::Acquire);
+                        let mut status = worker.status.load(Ordering::SeqCst);
                         while status == 0 {
                             thread::park();
-                            status = worker.status.load(Ordering::Acquire);
+                            status = worker.status.load(Ordering::SeqCst);
                         }
 
                         if status == 1 {
                             return;
                         }
 
-                        pool.parked_threads.fetch_sub(1, Ordering::Release);
+                        pool.parked_threads.fetch_sub(1, Ordering::SeqCst);
                         match unsafe { (*worker.task.get()).clone() } {
                             Some(task) => graph.compute(task),
                             None => panic!("What the birds"),
                         }
-                        worker.status.store(0, Ordering::Release);
+                        worker.status.store(0, Ordering::SeqCst);
 
                         lock(&pool.last_unoccupied).insert(worker.this_thread.clone(), &pool);
-                        pool.parked_threads.fetch_add(1, Ordering::Release);
+                        let parked = pool.parked_threads.fetch_add(1, Ordering::SeqCst);
+                        //if parked == pool.num_threads() - 1 && !pool.paused.load(Ordering::SeqCst) {
+                        //    pool.assign(&mut graph.leftovers.clone())
+                        //}
                     }
                 }));
             }
@@ -117,6 +121,7 @@ impl Pool {
                 last_unoccupied,
                 thread_handles,
                 worker_handles,
+                paused: AtomicBool::new(false),
             }
         })
     }
@@ -137,11 +142,11 @@ impl Pool {
         while self
             .worker_handles
             .iter()
-            .any(|w| w.status.load(Ordering::Acquire) != 0)
+            .any(|w| w.status.load(Ordering::SeqCst) != 0)
         {}
 
         for n in 0..self.worker_handles.len() {
-            self.worker_handles[n].status.store(1, Ordering::Release);
+            self.worker_handles[n].status.store(1, Ordering::SeqCst);
             self.thread_handles[n].thread().unpark();
         }
 
@@ -171,12 +176,20 @@ impl Pool {
 
     // Executor tries to reuse same threads. But doesn't try to use same threads for the same tasks
     pub fn assign(self: &Arc<Self>, task: impl IntoIterator<Item = NodeId>) {
+        if self.paused.load(Ordering::SeqCst) {
+            return;
+        }
         // TODO: Keep track of parked threads, and only take tasks, until all threads have been filled.
         let mut occupancy = lock(&self.last_unoccupied);
         for task in task {
+            let done = task.done.load(Ordering::SeqCst);
             if task.try_poll() {
                 if DEBUG {
-                    println!("  already being polled")
+                    println!(
+                        "  already being polled (done:{done}). {}/{} parked threads",
+                        self.parked_threads.load(Ordering::SeqCst),
+                        self.live_threads()
+                    )
                 };
 
                 // TODO: Push to global que
@@ -211,6 +224,6 @@ impl Pool {
 
     pub fn live_threads(self: &Arc<Self>) -> usize {
         let n = self.num_threads();
-        n - self.parked_threads.load(Ordering::Acquire).min(n)
+        n - self.parked_threads.load(Ordering::SeqCst).min(n)
     }
 }

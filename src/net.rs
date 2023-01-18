@@ -185,11 +185,11 @@ impl Networker {
             }
             NodeReady { data, node } => {
                 let node = self.awaited[&node].clone();
-                if node.is_being_polled.swap(true, Ordering::Acquire) {
+                if node.is_being_polled.swap(true, Ordering::SeqCst) {
                     panic!("NodeReady event for in-use node: {}", node.name);
                 }
 
-                node.done.store(true, Ordering::Release);
+                node.done.store(true, Ordering::SeqCst);
                 unsafe { node.output.deserialize(&data) }
 
                 //self.graph.print();
