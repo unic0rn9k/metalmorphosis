@@ -49,8 +49,8 @@ unsafe impl Sync for Pool {}
 impl Pool {
     pub fn new(graph: Weak<Graph>) -> Arc<Self> {
         Arc::new_cyclic(|pool| {
-            //let threads = 4;
-            let threads = std::thread::available_parallelism().unwrap().into();
+            let threads = 4;
+            //let threads = std::thread::available_parallelism().unwrap().into();
             let mut worker_handles = vec![];
             let mut thread_handles = vec![];
             let last_unoccupied = Arc::new(Mutex::new(WorkerStack::new()));

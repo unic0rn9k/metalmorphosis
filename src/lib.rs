@@ -704,6 +704,8 @@ macro_rules! task {
 }
 
 #[cfg(test)]
+mod blur;
+#[cfg(test)]
 mod test {
     extern crate test;
     use std::sync::mpsc::channel;
@@ -774,13 +776,17 @@ mod test {
         type Output = ();
         fn init(self, graph: &mut GraphBuilder<Self>) -> Self::InitOutput {
             let x = graph.spawn(X);
+            let x2 = graph.spawn(X);
             let f = graph.spawn(F(x));
+            let f2 = graph.spawn(F(x2));
             let f = graph.lock_symbol(f);
+            let f2 = graph.lock_symbol(f2);
             let x = graph.lock_symbol(x);
-            task!(graph, (x, f), {
+            task!(graph, (x, f, f2), {
                 let y = unsafe { *f.await.0 };
+                let y2 = unsafe { *f2.await.0 };
                 let x = unsafe { *x.await.0 };
-                println!("f({x}) = ({y})")
+                println!("f({x}) = ({y}) = {y2}")
             });
         }
     }
