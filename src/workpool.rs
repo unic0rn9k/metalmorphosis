@@ -49,8 +49,8 @@ unsafe impl Sync for Pool {}
 impl Pool {
     pub fn new(graph: Weak<Graph>) -> Arc<Self> {
         Arc::new_cyclic(|pool| {
-            let threads = 4;
-            //let threads = std::thread::available_parallelism().unwrap().into();
+            //let threads = 4;
+            let threads = std::thread::available_parallelism().unwrap().into();
             let mut worker_handles = vec![];
             let mut thread_handles = vec![];
             let last_unoccupied = Arc::new(Mutex::new(WorkerStack::new()));
@@ -157,18 +157,11 @@ impl Pool {
     }
 
     // Executor tries to reuse same threads. But doesn't try to use same threads for the same tasks
-    pub fn assign<'a>(self: &Arc<Self>, task: impl IntoIterator<Item = &'a Arc<Node>>) {
+    pub fn assign<'a>(self: &Arc<Self>, task: impl IntoIterator<Item = &'a Arc<Node>>) -> bool {
         // TODO: Keep track of parked threads, and only take tasks, until all threads have been filled.
         let mut occupancy = lock(&self.last_unoccupied);
-        for task in task {
-            if task.is_being_polled.swap(true, Ordering::Acquire) {
-                if DEBUG {
-                    println!("  already being polled")
-                };
-
-                // TODO: Push to global que
-                continue;
-            }
+        let mut task = task.into_iter();
+        loop {
             //if task.mpi_instance != self.mpi_instance() {
             //    task.net()
             //        .send(net::Event::AwaitNode(task.clone()))
@@ -176,18 +169,40 @@ impl Pool {
             //    continue;
             //}
 
-            let device = occupancy.pop(self);
+            let mut device = occupancy.pop(self);
+            //while device.is_none() {
+            //    device = occupancy.pop(self);
+            //}
             if let Some(device) = device {
+                let task = match task.next() {
+                    Some(task) => {
+                        if task.is_being_polled.swap(true, Ordering::Acquire) {
+                            if DEBUG {
+                                println!("  already being polled")
+                            };
+
+                            // TODO: Push to global que
+                            continue;
+                        } else {
+                            task
+                        }
+                    }
+                    None => {
+                        occupancy.insert(device, self);
+                        return false;
+                    }
+                };
                 let worker = &self.worker_handles[device.0];
                 worker
                     .task
                     .store(task.this_node as isize, Ordering::Release);
                 self.thread_handles[device.0].thread().unpark();
             } else {
-                panic!(
-                    "This is so sad. Were all OUT OF DEVICES. Thought there are still {} live threads",
-                    self.thread_handles.iter().map(|t| !t.is_finished() as u32).sum::<u32>()
-                )
+                return false;
+                //panic!(
+                //    "This is so sad. Were all OUT OF DEVICES. Thought there are still {} live threads",
+                //    self.thread_handles.iter().map(|t| !t.is_finished() as u32).sum::<u32>()
+                //)
                 // TODO: Push to global que
             }
         }

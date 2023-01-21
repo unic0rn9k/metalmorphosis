@@ -29,8 +29,10 @@ Benchmarks can be found at [benchmarks_og_bilag.md](benchmarks_og_bilag.md)
     - don't time awaits inside node
     - reusing output in node would confuse executor
 
-- [ ] clean code (remove duplicate work)
+- [ ] references in nodes
 - [ ] nicer API (ATLEAST for custom schedular)
+
+- [ ] clean code (remove duplicate work)
 - [ ] return Result everywhere
 
 - [X] priority que.

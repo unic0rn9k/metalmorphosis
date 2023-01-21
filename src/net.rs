@@ -158,7 +158,7 @@ impl Networker {
                 };
                 self.awaited_at[awaited].push(src);
 
-                self.graph.pool.assign([&self.graph.nodes[awaited]])
+                self.graph.pool.assign([&self.graph.nodes[awaited]]);
             }
             NodeReady { data, node } => {
                 let node = self.graph.nodes[node].clone();

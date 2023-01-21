@@ -29,8 +29,10 @@
 //!     - don't time awaits inside node
 //!     - reusing output in node would confuse executor
 //!
-//! - [ ] clean code (remove duplicate work)
+//! - [ ] references in nodes
 //! - [ ] nicer API (ATLEAST for custom schedular)
+//!
+//! - [ ] clean code (remove duplicate work)
 //! - [ ] return Result everywhere
 //!
 //! - [X] priority que.
@@ -130,6 +132,35 @@ pub struct OwnedSymbol<T> {
 }
 unsafe impl<T> Send for OwnedSymbol<T> {}
 
+#[derive(Clone)]
+pub struct LockedSymbolGroup<T> {
+    returners: Vec<usize>,
+    reader: usize,
+    marker: PhantomData<T>,
+}
+
+impl<T> LockedSymbolGroup<T> {
+    fn own(self, graph: &Arc<Graph>) -> OwnedSymbolGroup<T> {
+        OwnedSymbolGroup {
+            returners: self
+                .returners
+                .iter()
+                .map(|r| graph.nodes[*r].clone())
+                .collect(),
+            reader: graph.nodes[self.reader].clone(),
+            marker: PhantomData,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct OwnedSymbolGroup<T> {
+    returners: Vec<Arc<Node>>,
+    reader: Arc<Node>,
+    marker: PhantomData<T>,
+}
+unsafe impl<T> Send for OwnedSymbolGroup<T> {}
+
 pub struct Reader<T>(pub *const T);
 unsafe impl<T> Send for Reader<T> {}
 
@@ -205,7 +236,10 @@ unsafe impl Send for Node {}
 unsafe impl Sync for Node {}
 
 impl Node {
-    fn new<T: Serialize + Deserialize<'static> + Sync + 'static>(this_node: usize) -> Self {
+    fn new<T: Serialize + Deserialize<'static> + Sync + 'static>(
+        this_node: usize,
+        out: Option<*mut T>,
+    ) -> Self {
         Node {
             this_node,
             awaited_by: RwLock::new(mpmc::Stack::new(1, 3).undoable()),
@@ -213,7 +247,7 @@ impl Node {
             task: Box::new(|_, _| Box::pin(async {})),
             future: UnsafeCell::new(Box::pin(async {})),
             continue_to: AtomicIsize::new(-1),
-            output: UnsafeCell::new(Buffer::new::<T>()),
+            output: UnsafeCell::new(Buffer::new::<T>(out)),
             done: AtomicBool::new(false),
             is_being_polled: AtomicBool::new(false),
             mpi_instance: 0,
@@ -242,14 +276,7 @@ impl Node {
 
     // If this was not in Node, then check associated with downcasting would not be required.
     fn output<T: 'static>(self: &Arc<Self>) -> *mut T {
-        unsafe {
-            (*self.output.get()).data.downcast_mut().unwrap_or_else(|| {
-                panic!(
-                    "Tried to get output with incorrect runtime type. Expected {}",
-                    type_name::<T>()
-                )
-            })
-        }
+        unsafe { &mut *((*self.output.get()).mut_ptr() as *mut T) }
     }
 
     fn try_poll(self: &Arc<Self>) -> bool {
@@ -258,21 +285,39 @@ impl Node {
 }
 
 pub struct Buffer {
-    data: Box<dyn Any>,
+    data: *mut dyn Any,
     de: fn(&[u8], *mut ()) -> Result<()>,
     se: fn(*const ()) -> Result<Vec<u8>>,
+    drop: fn(&mut Self),
+}
+
+impl Drop for Buffer {
+    fn drop(&mut self) {
+        let d = self.drop;
+        d(self);
+    }
 }
 
 impl Buffer {
-    pub fn new<T: Serialize + Deserialize<'static> + Sync + 'static>() -> Self {
+    pub fn new<T: Serialize + Deserialize<'static> + Sync + 'static>(src: Option<*mut T>) -> Self {
         unsafe {
+            let data;
+            let drop: fn(&mut Buffer);
+            if let Some(src) = src {
+                data = src;
+                drop = |_| {};
+            } else {
+                data = Box::into_raw(Box::<T>::new_zeroed().assume_init());
+                drop = |this: &mut Buffer| std::mem::drop(Box::from_raw(this.data));
+            }
             Buffer {
-                data: Box::<T>::new_uninit().assume_init(),
+                data,
                 de: |b, out| {
                     *(out as *mut T) = bincode::deserialize(transmute(b))?;
                     Ok(())
                 },
                 se: |v| Ok(bincode::serialize::<T>(&*(v as *const T))?),
+                drop,
             }
         }
     }
@@ -286,10 +331,10 @@ impl Buffer {
     }
 
     fn ptr(&self) -> *const () {
-        unsafe { transmute::<&dyn Any, (*const (), &())>(self.data.as_ref()).0 }
+        unsafe { transmute::<*mut dyn Any, (*const (), &())>(self.data).0 }
     }
     fn mut_ptr(&mut self) -> *mut () {
-        unsafe { transmute::<&mut dyn Any, (*mut (), &())>(self.data.as_mut()).0 }
+        unsafe { transmute::<*mut dyn Any, (*mut (), &())>(self.data).0 }
     }
 }
 
@@ -320,7 +365,7 @@ impl<T: Task> GraphBuilder<T> {
         }
     }
 
-    pub fn spawn<U: Task>(&mut self, task: U) -> U::InitOutput {
+    pub fn spawn<U: Task>(&mut self, task: U, out: Option<*mut U::Output>) -> U::InitOutput {
         //if self.schedulers.is_empty() {
         //    self.schedulers.push(keep_local_schedular)
         //} else {
@@ -328,7 +373,7 @@ impl<T: Task> GraphBuilder<T> {
         //}
 
         let len = self.nodes.borrow().len();
-        self.push(Node::new::<U::Output>(len));
+        self.push(Node::new::<U::Output>(len, out));
         self.nodes.borrow_mut()[len].name = U::name();
         if DEBUG {
             println!("{}", U::name())
@@ -390,7 +435,7 @@ impl<T: Task> GraphBuilder<T> {
             awaits: vec![],
             //schedulers: vec![],
         };
-        entry.spawn(task);
+        entry.spawn(task, None);
         entry
     }
 
@@ -428,6 +473,10 @@ impl<T: Task> GraphBuilder<T> {
     // it also does not account for message size or computation cost
     pub fn scheduler(&mut self, scheduler: Scheduler) {
         //self.schedulers[self.caller] = scheduler
+    }
+
+    pub fn mutate_node(&mut self, f: impl Fn(&mut Node)) {
+        f(&mut self.nodes.borrow_mut()[self.caller])
     }
 }
 
@@ -501,7 +550,7 @@ impl Graph {
     }
 
     fn assign_children_of<'a>(self: &'a Arc<Self>, node: &'a Arc<Node>) -> Option<&'a Arc<Node>> {
-        let children = self.children(node);
+        let mut children = self.children(node);
         let continue_with = children.last();
         self.pool.assign(children.iter().copied());
         continue_with.copied()
@@ -564,6 +613,7 @@ impl Graph {
                             .is_being_polled
                             .swap(true, Ordering::Acquire)
                         {
+                            //node.awaited_by.read().unwrap().push(awaited, 0);
                             return;
                         }
 
@@ -694,12 +744,12 @@ impl Task for () {
 macro_rules! task {
     ($graph: ident, ($($cap: ident),* $(,)?), $f: expr) => {
         $graph.task(Box::new(move |_graph, _node| {
-            $(let $cap = $cap.own(&_graph);)*
+            $(let $cap = $cap.clone().own(&_graph);)*
             Box::pin(async move {
                 let out: Self::Output = $f;
                 unsafe{(*_node.output()) = out}
             })
-        }));
+        }))
     };
 }
 
@@ -750,7 +800,7 @@ mod test {
         type InitOutput = Symbol<f32>;
         type Output = f32;
         fn init(self, graph: &mut GraphBuilder<Self>) -> Self::InitOutput {
-            //graph.set_mpi_instance(1);
+            graph.set_mpi_instance(1);
             task!(graph, (), 2.);
             graph.this_node()
         }
@@ -775,10 +825,10 @@ mod test {
         type InitOutput = ();
         type Output = ();
         fn init(self, graph: &mut GraphBuilder<Self>) -> Self::InitOutput {
-            let x = graph.spawn(X);
-            let x2 = graph.spawn(X);
-            let f = graph.spawn(F(x));
-            let f2 = graph.spawn(F(x2));
+            let x = graph.spawn(X, None);
+            let x2 = graph.spawn(X, None);
+            let f = graph.spawn(F(x), None);
+            let f2 = graph.spawn(F(x2), None);
             let f = graph.lock_symbol(f);
             let f2 = graph.lock_symbol(f2);
             let x = graph.lock_symbol(x);
@@ -786,7 +836,7 @@ mod test {
                 let y = unsafe { *f.await.0 };
                 let y2 = unsafe { *f2.await.0 };
                 let x = unsafe { *x.await.0 };
-                println!("f({x}) = ({y}) = {y2}")
+                println!("f({x}) = ({y})")
             });
         }
     }
@@ -813,6 +863,7 @@ mod test {
 
     #[bench]
     fn f_of_x(b: &mut Bencher) {
+        //let mut y = 0f32;
         let builder = GraphBuilder::main(Y);
         let graph = builder.build();
         let (net_events, mut net) = graph.init_net();
@@ -822,6 +873,7 @@ mod test {
             graph.spin_down();
             graph.realize(net_events.clone());
             net.run();
+            //assert_eq!(y, 10.);
             drop(lock);
         });
         println!("Finishing test...");
@@ -842,66 +894,6 @@ mod test {
             black_box(y());
         })
     }
-
-    /*
-    struct Blurrr {
-        data: Symbol<[u8]>,
-        width: usize,
-        height: usize,
-    }
-    impl Task for Blurrr {
-        type InitOutput = Symbol<Vec<u8>>;
-        type Output = Vec<u8>;
-
-        fn init(self, graph: &mut GraphHandle<Self>) -> Self::InitOutput {
-            let (height, width) = (self.height, self.width);
-            assert_eq!(width % 3, 0);
-            assert_eq!(height % 3, 0);
-
-            let mut stage2 = vec![0u8; width * height];
-            let ret = graph.output(); // should return ref to data in buffer, not the actual buffer.
-            let buffer = graph.alloc(vec![0; height * width]);
-
-            for row in 0..(height / 3) {
-                //let a = Buffer::from(&mut buffer[...]);
-                //let b = Buffer::from(&mut ret[...]);
-
-                //let stage1 = graph.spawn(RowBlur3(self.data, self.width), a);
-                //stage2.push(graph.spawn(ColBlur3(stage1, self.height), b);
-
-                // `stage1` and `self.data` do not have the same type.
-                // `let stage0: Symbol<[u8]> = Symbol.map(|val: &[u8]| &val[...] );`
-                // Symbol::map<T, U> convert a Symbol<T> to a Symbol<U>
-                // if you just change the type, and not the data, it should be zero-cost
-            }
-
-            // executor should se that this node has multiple sources, and should then try to distribute the work.
-            // it shouldn't assign nodes to threads, if the nodes have pending sources that are already being processed.
-            //
-            // if a node checks its reader while being polled, and the reader is being polled on another device,
-            // it should be the thread of the reading node that terminates.
-            //
-            // Don't start randomly distributing tasks, start with the ones that dont have any sources!
-
-            task! {graph,
-                todo!()
-                // 2 row blurs, then you can do 1 col blur, if the input is paddet.
-                // then 1 row blur per col blur.
-                //
-                // RowBlurr[x,y] should write to stage1[x,y]
-                // RowBlurr[x,y] should read from stage0[x,y]
-                // RowBlurr[x,y] should read from stage0[x+1,y]
-                // RowBlurr[x,y] should read from stage0[x-1,y]
-                //
-                // RowBlurr[x,y] should write to stage2[x,y]
-                // ColBlurr[x,y] should read from stage1[x,y]
-                // ColBlurr[x,y] should read from stage1[x,y+1]
-                // ColBlurr[x,y] should read from stage1[x,y-1]
-            };
-            graph.this_node()
-        }
-    }
-    */
 
     #[bench]
     fn send_recv(b: &mut Bencher) {
