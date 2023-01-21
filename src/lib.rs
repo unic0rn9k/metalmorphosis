@@ -836,7 +836,7 @@ mod test {
                 let y = unsafe { *f.await.0 };
                 let y2 = unsafe { *f2.await.0 };
                 let x = unsafe { *x.await.0 };
-                println!("f({x}) = ({y})")
+                println!("f({x}) = ({y}) = {y2}")
             });
         }
     }

@@ -162,9 +162,10 @@ impl Networker {
             }
             NodeReady { data, node } => {
                 let node = self.graph.nodes[node].clone();
-                if node.is_being_polled.swap(true, Ordering::Acquire) {
-                    panic!("NodeReady event for in-use node: {}", node.name);
-                }
+                //if node.is_being_polled.swap(true, Ordering::Acquire) {
+                //    panic!("NodeReady event for in-use node: {}", node.name);
+                //}
+                while !node.try_poll() {}
 
                 node.done.store(true, Ordering::Release);
                 unsafe { (*node.output.get()).deserialize(&data) }

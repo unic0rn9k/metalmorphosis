@@ -32,7 +32,7 @@ fn table(img: &impl Index<usize, Output = f32>, dim: &[usize]) {
 
 #[bench]
 fn basic_blur(b: &mut Bencher) {
-    fn blur_x(img: &[f32], output: &mut [f32], dim: &[usize; 2]) {
+    fn blur_trans(img: &[f32], output: &mut [f32], dim: &[usize; 2]) {
         let img = |x: isize, y: isize| {
             if x < 0 || x >= dim[0] as isize || y < 0 || y >= dim[1] as isize {
                 0f32
@@ -67,9 +67,9 @@ fn basic_blur(b: &mut Bencher) {
 
     b.iter(|| {
         let trans = [DIM[1], DIM[0]];
-        blur_x(&input, &mut horizontal, &DIM);
+        blur_trans(&input, &mut horizontal, &DIM);
         //blur_x(&input, &mut horizontal, &trans);
-        blur_x(&horizontal, &mut output, &trans);
+        blur_trans(&horizontal, &mut output, &trans);
         //blur_x(&horizontal, &mut output, &DIM);
 
         black_box(output);
