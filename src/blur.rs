@@ -46,7 +46,7 @@ fn basic_blur(b: &mut Bencher) {
             for x in 0..*x as isize {
                 let p = (img(x + 1, y) + img(x - 1, y) + img(x, y)) / 3.;
                 // output[x as usize + y as usize * dim[0]] = p; // non-transposed output
-                output[y as usize + x as usize * dim[1]] = p; // transposed output
+                output[y as usize + x as usize * dim[1]] = black_box(p); // transposed output
             }
         }
     }
@@ -157,7 +157,7 @@ impl<'a> Task for MorphicBlur<'a> {
 
         let input = graph.spawn(Const(self.0), None);
 
-        let chunks = 2;
+        let chunks = 4;
         let chunk = (dim[1] - 1) / chunks;
         let mut output = vec![];
 
@@ -166,7 +166,7 @@ impl<'a> Task for MorphicBlur<'a> {
                 MorphicBlurStage {
                     input: input.clone(),
                     dim,
-                    bound: [[1, 1], [n * chunk, dim[0] - 1]],
+                    bound: [[1, 1], [dim[0] - 1, n * chunk]],
                 },
                 Some(self.1),
             );
@@ -175,7 +175,7 @@ impl<'a> Task for MorphicBlur<'a> {
                 MorphicBlurStage {
                     input: stage1.clone(),
                     dim: [dim[1], dim[0]],
-                    bound: [[1, 1], [dim[0] - 1, n * chunk]],
+                    bound: [[1, 1], [n * chunk, dim[0] - 1]],
                 },
                 Some(self.2),
             );
@@ -233,4 +233,4 @@ fn morphic(b: &mut Bencher) {
     graph.kill(net.kill());
 }
 
-const DIM: [usize; 2] = [3000, 3000];
+const DIM: [usize; 2] = [4, 40000];
