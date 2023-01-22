@@ -261,7 +261,7 @@ impl Node {
                 spin_loop()
             }
             self.awaited_by.write().unwrap().undo();
-            self.done.store(false, Ordering::SeqCst);
+            self.done.store(false, Ordering::Release);
             (*self.future.get()) = (self.task)(graph, self.clone())
         }
     }
@@ -566,7 +566,7 @@ impl Graph {
             if DEBUG {
                 println!("{} compputing {}", node.mpi_instance, node.name)
             };
-            if node.done.load(Ordering::SeqCst) {
+            if node.done.load(Ordering::Acquire) {
                 println!("already done");
                 let continue_with = self.assign_children_of(node);
 
@@ -595,7 +595,7 @@ impl Graph {
                     if node.this_node == 0 {
                         node.net().send(net::Event::Kill).unwrap()
                     }
-                    node.done.store(true, Ordering::SeqCst);
+                    node.done.store(true, Ordering::Release);
                 }
 
                 Poll::Pending => {
@@ -684,7 +684,7 @@ impl Graph {
     }
 
     pub fn spin_down(self: &Arc<Self>) {
-        while self.pool.parked_threads.load(Ordering::SeqCst) != self.pool.num_threads() {
+        while self.pool.parked_threads.load(Ordering::Acquire) != self.pool.num_threads() {
             spin_loop()
         }
     }
@@ -800,7 +800,7 @@ mod test {
         type InitOutput = Symbol<f32>;
         type Output = f32;
         fn init(self, graph: &mut GraphBuilder<Self>) -> Self::InitOutput {
-            graph.set_mpi_instance(1);
+            //graph.set_mpi_instance(1);
             task!(graph, (), 2.);
             graph.this_node()
         }

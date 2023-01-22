@@ -87,12 +87,12 @@ impl Pool {
                             return;
                         }
 
-                        pool.parked_threads.fetch_sub(1, Ordering::SeqCst);
+                        pool.parked_threads.fetch_sub(1, Ordering::Release);
                         graph.compute(task as usize);
-                        worker.task.store(-1, Ordering::SeqCst);
+                        worker.task.store(-1, Ordering::Release);
 
                         lock(&pool.last_unoccupied).insert(worker.home.clone(), &pool);
-                        pool.parked_threads.fetch_add(1, Ordering::SeqCst);
+                        pool.parked_threads.fetch_add(1, Ordering::Release);
                     }
                 }));
             }
@@ -116,7 +116,7 @@ impl Pool {
         while self
             .worker_handles
             .iter()
-            .any(|w| w.task.load(Ordering::SeqCst) == -3)
+            .any(|w| w.task.load(Ordering::Acquire) == -3)
         {}
     }
 
@@ -124,11 +124,11 @@ impl Pool {
         while self
             .worker_handles
             .iter()
-            .any(|w| w.task.load(Ordering::SeqCst) >= 0)
+            .any(|w| w.task.load(Ordering::Acquire) >= 0)
         {}
 
         for n in 0..self.worker_handles.len() {
-            self.worker_handles[n].task.store(-2, Ordering::SeqCst);
+            self.worker_handles[n].task.store(-2, Ordering::Release);
             self.thread_handles[n].thread().unpark();
         }
 

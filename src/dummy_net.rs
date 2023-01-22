@@ -10,7 +10,7 @@ pub struct Networker(Receiver<Event>, Arc<Graph>);
 
 impl Networker {
     pub fn run(&mut self) {
-        while !self.1.nodes[0].done.load(Ordering::SeqCst) {
+        while !self.1.nodes[0].done.load(Ordering::Acquire) {
             std::hint::spin_loop()
         }
     }
