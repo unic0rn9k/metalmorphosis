@@ -591,7 +591,7 @@ impl Graph {
 
             match unsafe { Pin::new(&mut *node.future.get()) }.poll(&mut cx) {
                 Poll::Ready(()) => {
-                    println!("=== READY ===");
+                    println!("* READY");
                     if node.this_node == 0 {
                         node.net().send(net::Event::Kill).unwrap()
                     }

@@ -157,7 +157,7 @@ impl Pool {
     }
 
     // Executor tries to reuse same threads. But doesn't try to use same threads for the same tasks
-    pub fn assign<'a>(self: &Arc<Self>, task: impl IntoIterator<Item = &'a Arc<Node>>) -> bool {
+    /*pub fn assign<'a>(self: &Arc<Self>, task: impl IntoIterator<Item = &'a Arc<Node>>) -> bool {
         // TODO: Keep track of parked threads, and only take tasks, until all threads have been filled.
         let mut occupancy = lock(&self.last_unoccupied);
         let mut task = task.into_iter();
@@ -198,11 +198,47 @@ impl Pool {
                     .store(task.this_node as isize, Ordering::Release);
                 self.thread_handles[device.0].thread().unpark();
             } else {
-                return false;
-                //panic!(
-                //    "This is so sad. Were all OUT OF DEVICES. Thought there are still {} live threads",
-                //    self.thread_handles.iter().map(|t| !t.is_finished() as u32).sum::<u32>()
-                //)
+                //return false;
+                panic!(
+                    "This is so sad. Were all OUT OF DEVICES. Thought there are still {} live threads",
+                    self.thread_handles.iter().map(|t| !t.is_finished() as u32).sum::<u32>()
+                )
+                // TODO: Push to global que
+            }
+        }
+    }*/
+
+    pub fn assign<'a>(self: &Arc<Self>, task: impl IntoIterator<Item = &'a Arc<Node>>) {
+        // TODO: Keep track of parked threads, and only take tasks, until all threads have been filled.
+        let mut occupancy = lock(&self.last_unoccupied);
+        for task in task {
+            if task.is_being_polled.swap(true, Ordering::Acquire) {
+                if DEBUG {
+                    println!("  already being polled")
+                };
+
+                // TODO: Push to global que
+                continue;
+            }
+            //if task.mpi_instance != self.mpi_instance() {
+            //    task.net()
+            //        .send(net::Event::AwaitNode(task.clone()))
+            //        .unwrap();
+            //    continue;
+            //}
+
+            let device = occupancy.pop(self);
+            if let Some(device) = device {
+                let worker = &self.worker_handles[device.0];
+                worker
+                    .task
+                    .store(task.this_node as isize, Ordering::Release);
+                self.thread_handles[device.0].thread().unpark();
+            } else {
+                panic!(
+                    "This is so sad. Were all OUT OF DEVICES. Thought there are still {} live threads",
+                    self.thread_handles.iter().map(|t| !t.is_finished() as u32).sum::<u32>()
+                )
                 // TODO: Push to global que
             }
         }

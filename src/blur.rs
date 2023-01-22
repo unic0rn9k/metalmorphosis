@@ -11,7 +11,7 @@ fn sample(dim: &[usize; 2]) -> Vec<f32> {
     for x in 0..dim[0] {
         let k = dim[1] as f32 / 2.;
         let y = (x as f32 * 0.1).sin() * k + k;
-        sample[x + y as usize * dim[0]] = 1.;
+        sample[x + y.min(dim[1] as f32 - 1.) as usize * dim[0]] = 1.;
     }
     sample
 }
@@ -62,8 +62,8 @@ fn basic_blur(b: &mut Bencher) {
     //]);
 
     let input = black_box(sample(&DIM));
-    let mut output = black_box([0f32; DIM[0] * DIM[1]]);
-    let mut horizontal = black_box([0f32; DIM[0] * DIM[1]]);
+    let mut output = black_box(vec![0f32; DIM[0] * DIM[1]]);
+    let mut horizontal = black_box(vec![0f32; DIM[0] * DIM[1]]);
 
     b.iter(|| {
         let trans = [DIM[1], DIM[0]];
@@ -72,7 +72,7 @@ fn basic_blur(b: &mut Bencher) {
         blur_trans(&horizontal, &mut output, &trans);
         //blur_x(&horizontal, &mut output, &DIM);
 
-        black_box(output);
+        black_box(&output[..]);
     });
 
     table(&input, &DIM);
@@ -127,6 +127,7 @@ impl Task for MorphicBlurStage {
     type Output = Vec<f32>;
 
     fn init(self, graph: &mut GraphBuilder<Self>) -> Self::InitOutput {
+        //graph.is_leaf = false;
         let source = graph.lock_symbol(self.input);
         graph.task(Box::new(move |graph, node| {
             let source = source.clone().own(graph);
@@ -156,40 +157,51 @@ impl<'a> Task for MorphicBlur<'a> {
 
         let input = graph.spawn(Const(self.0), None);
 
-        let chunks = 1;
+        let chunks = 2;
         let chunk = (dim[1] - 1) / chunks;
-        let n = 1;
+        let mut output = vec![];
 
-        //for n in 1..chunks + 1 {
-        let stage1 = graph.spawn(
-            MorphicBlurStage {
-                input: input.clone(),
-                dim,
-                bound: [[1, 1], [dim[0] - 1, n * chunk]],
-            },
-            Some(self.1),
-        );
+        for n in 1..chunks + 1 {
+            let stage1 = graph.spawn(
+                MorphicBlurStage {
+                    input: input.clone(),
+                    dim,
+                    bound: [[1, 1], [n * chunk, dim[0] - 1]],
+                },
+                Some(self.1),
+            );
 
-        let output = graph.spawn(
-            MorphicBlurStage {
-                input: stage1.clone(),
-                dim: [dim[1], dim[0]],
-                bound: [[1, 1], [n * chunk, dim[0] - 1]],
-            },
-            Some(self.2),
-        );
-        //}
+            let out = graph.spawn(
+                MorphicBlurStage {
+                    input: stage1.clone(),
+                    dim: [dim[1], dim[0]],
+                    bound: [[1, 1], [dim[0] - 1, n * chunk]],
+                },
+                Some(self.2),
+            );
+            output.push(graph.lock_symbol(out));
+        }
 
         //let input = graph.lock_symbol(input);
         //let stage1 = graph.lock_symbol(stage1);
-        let output = graph.lock_symbol(output);
+        //let output = graph.lock_symbol(output);
 
-        task!(graph, (output/*, input, stage1*/), {
-            //table(unsafe { &*input.await.0 }, &dim);
-            //table(unsafe { &*stage1.await.0 }, &[dim[1], dim[0]]);
-            //table(unsafe { &*output.await.0 }, &dim);
-            black_box(unsafe { &*output.await.0 });
-        })
+        graph.task(Box::new(move |graph, node| {
+            let mut output: Vec<_> = output.iter().map(|s| s.clone().own(graph)).collect();
+            Box::pin(async move {
+                println!("=== main polled ===");
+                for out in output.drain(..) {
+                    black_box(out.await);
+                }
+            })
+        }))
+
+        //task!(graph, (output/*, input, stage1*/), {
+        //    //table(unsafe { &*input.await.0 }, &dim);
+        //    //table(unsafe { &*stage1.await.0 }, &[dim[1], dim[0]]);
+        //    //table(unsafe { &*output.await.0 }, &dim);
+        //    black_box(unsafe { &*output.await.0 });
+        //})
     }
 }
 
@@ -212,17 +224,13 @@ fn morphic(b: &mut Bencher) {
     let builder = GraphBuilder::main(morphic_blur(&input, &mut stage1, &mut output, &padded_dim));
     let graph = builder.build();
     let (net_events, mut net) = graph.init_net();
-    let lock = std::sync::Mutex::new(());
     b.iter(|| {
-        let lock = lock.lock();
         graph.spin_down();
         graph.realize(net_events.clone());
         net.run();
-
-        drop(lock);
     });
     println!("Finishing test...");
     graph.kill(net.kill());
 }
 
-const DIM: [usize; 2] = [100, 50];
+const DIM: [usize; 2] = [3000, 3000];
