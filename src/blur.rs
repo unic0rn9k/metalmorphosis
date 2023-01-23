@@ -87,7 +87,7 @@ impl<T: Sync + Serialize + Deserialize<'static> + 'static> Task for Const<T> {
     type Output = T;
 
     fn init(self, graph: &mut GraphBuilder<Self>) -> Self::InitOutput {
-        graph.mutate_node(|node| unsafe {
+        graph.mutate_this_node(|node| unsafe {
             let b = &mut *node.output.get();
             b.data = self.0 as *mut ();
             b.drop = |_| {};

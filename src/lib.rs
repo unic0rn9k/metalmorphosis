@@ -81,8 +81,8 @@ pub mod mpsc;
 mod net;
 mod workpool;
 
-use dummy_net as net_;
-//use net as net_;
+//use dummy_net as net_;
+use net as net_;
 
 use error::{Error, Result};
 use mpsc::UndoStack;
@@ -482,8 +482,6 @@ impl Graph {
             n.use_net(Some(net_events.clone()));
         }
 
-        //self.pool.assign([&self.nodes[0]]);
-
         if DEBUG {
             println!(
                 "Leafs: {:?}",
@@ -495,11 +493,6 @@ impl Graph {
         let mut leaves = leaves.into_iter();
         let continue_with = leaves.next();
         self.pool.assign(leaves.filter_map(|n| {
-            // FIXME: Initialy push children to leaf_node.awaiter
-            //        (1 and 2 arent leaf nodes. Only X has no children)
-            //        this is fine with pri-que, if leafs are just pushed with higher priority
-            // TODO:  If there are devices left, after assigning leaf nodes.
-            //        Then start assigning children.
             if DEBUG {
                 println!("LEAF: {n}")
             }

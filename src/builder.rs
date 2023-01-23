@@ -16,8 +16,6 @@ pub struct GraphBuilder<T: Task + ?Sized> {
     marker: PhantomData<T>,
     is_leaf: bool,
     leafs: Arc<RwLock<mpsc::UndoStack<usize>>>,
-    awaits: Vec<usize>,
-    //schedulers: Vec<Scheduler>,
 }
 
 impl<T: Task> GraphBuilder<T> {
@@ -32,18 +30,10 @@ impl<T: Task> GraphBuilder<T> {
             marker: PhantomData,
             is_leaf: true,
             leafs: self.leafs.clone(),
-            awaits: vec![],
-            //schedulers: vec![],
         }
     }
 
     pub fn spawn<U: Task>(&mut self, task: U, out: Option<*mut U::Output>) -> U::InitOutput {
-        //if self.schedulers.is_empty() {
-        //    self.schedulers.push(keep_local_schedular)
-        //} else {
-        //    self.schedulers.push(self.schedulers[self.caller])
-        //}
-
         let len = self.nodes.borrow().len();
         self.push(Node::new::<U::Output>(len, out));
         self.nodes.borrow_mut()[len].name = U::name();
@@ -52,24 +42,8 @@ impl<T: Task> GraphBuilder<T> {
         };
         let mut builder = self.next();
         let ret = task.init(&mut builder);
-
         if builder.is_leaf {
-            if DEBUG {
-                println!("Pushed leaf")
-            }
-            self.leafs.write().unwrap().push_extend(builder.caller);
-        } else {
-            if DEBUG {
-                println!("NOT_LEAF: {} <- {:?}", self.caller, builder.awaits)
-            };
-
-            //for awaits in &builder.awaits {
-            //    self.nodes.borrow_mut()[*awaits]
-            //        .awaited_by
-            //        .get_mut()
-            //        .unwrap()
-            //        .push_extend(self.caller)
-            //}
+            self.leafs.write().unwrap().push_extend(builder.caller)
         }
         ret
     }
@@ -95,10 +69,6 @@ impl<T: Task> GraphBuilder<T> {
         Graph::from_nodes(self.drain(), leafs)
     }
 
-    //fn extends(self, graph: &Arc<Graph>) -> Arc<Graph> {
-    //    graph.extend(self.drain())
-    //}
-
     pub fn main(task: T) -> Self {
         let mut entry = Self {
             caller: 0,
@@ -106,8 +76,6 @@ impl<T: Task> GraphBuilder<T> {
             marker: PhantomData,
             leafs: Arc::new(RwLock::new(mpsc::Stack::new(0, 1).undoable())),
             is_leaf: true,
-            awaits: vec![],
-            //schedulers: vec![],
         };
         entry.spawn(task, None);
         entry
@@ -139,22 +107,13 @@ impl<T: Task> GraphBuilder<T> {
         self.nodes.borrow_mut()[self.caller].mpi_instance = mpi
     }
 
-    // # Naiv distributed shcedular
-    // we start with the 0-in-degree nodes
-    // we have array where each element (usize) corresponds to one of those nodes
-    // then evaluate children (taking array of indicies from parents).
-    // Each child gets assigned to the index of the node that it had the most incomming edges from
-    // repeat for children (taking array of the indicies assign to their parents)
-    // also, dont count edges from parents that have already shared value with a given machine.
-    //
-    // the algorithm does not distribute nodes evenly, but it will minimize network communications
-    // it also does not account for message size or computation cost
-    pub fn scheduler(&mut self, scheduler: Scheduler) {
-        //self.schedulers[self.caller] = scheduler
+    pub fn mutate_node<U>(&mut self, s: Symbol<U>, f: impl Fn(&mut Node)) {
+        f(&mut self.nodes.borrow_mut()[s.0])
     }
 
-    pub fn mutate_node(&mut self, f: impl Fn(&mut Node)) {
-        f(&mut self.nodes.borrow_mut()[self.caller])
+    pub fn mutate_this_node(&mut self, f: impl Fn(&mut Node)) {
+        let s = self.this_node();
+        self.mutate_node(s, f)
     }
 }
 
@@ -171,16 +130,6 @@ impl Task for () {
     type InitOutput = ();
     type Output = ();
     fn init(self, _: &mut GraphBuilder<Self>) -> Self::InitOutput {}
-}
-
-/// The first argument is a vector containing all the parents of the node being scheduled.
-/// The second argument is the amount of mpi instances.
-/// The output should be the mpi instance that the task will be executed on.
-/// The output must never be greater than the amount of mpi instances.
-pub type Scheduler = fn(Vec<&Node>, usize) -> usize;
-
-pub fn keep_local_schedular(_: Vec<&Node>, _: usize) -> usize {
-    0
 }
 
 #[macro_export]
@@ -205,37 +154,6 @@ mod test {
     use test::black_box;
     use test::Bencher;
 
-    /*
-    struct GraphSpawner<T, O>{
-        spawn: fn(parent_graph: &mut Graph, params: &T) -> Vec<Node>,
-        params: Buffer,
-        marker: PhantomData<O>
-    }
-
-    graph.sub_graph(source: Task<Output=T>) -> smth idk
-    */
-    //struct AnonymousTask<Args, O>(
-    //    fn(&Arc<Graph>, Arc<Node>, Args) -> BoxFuture,
-    //    Args,
-    //    PhantomData<O>,
-    //);
-    //impl<Args: Sync + Send + 'static, O: Sync + Serialize + Deserialize<'static> + 'static> Task
-    //    for AnonymousTask<Args, O>
-    //{
-    //    type InitOutput = Symbol<O>;
-    //    type Output = O;
-
-    //    fn init(self, graph: &mut GraphBuilder<Self>) -> Self::InitOutput {
-    //        graph.task(Box::new(move |graph, node| {
-    //            Box::pin(async move {
-    //                let Self(task, args, _) = self;
-    //                unsafe { *node.output() = task(graph, node.clone(), args) }
-    //            })
-    //        }));
-    //        graph.this_node()
-    //    }
-    //}
-
     struct X;
     impl Task for X {
         type InitOutput = Symbol<f32>;
@@ -249,9 +167,6 @@ mod test {
 
     struct F(Symbol<f32>);
     impl Task for F {
-        // type Symbols = (Symbol<f32>);
-        // graph.lock(self.0);
-        // task!(graph, let (x) = node.own());
         type InitOutput = Symbol<f32>;
         type Output = f32;
         fn init(self, graph: &mut GraphBuilder<Self>) -> Self::InitOutput {
@@ -270,6 +185,7 @@ mod test {
             let x2 = graph.spawn(X, None);
             let f = graph.spawn(F(x), None);
             let f2 = graph.spawn(F(x2), None);
+            graph.mutate_node(f2, |f| f.mpi_instance = 1);
             let f = graph.lock_symbol(f);
             let f2 = graph.lock_symbol(f2);
             let x = graph.lock_symbol(x);
@@ -281,11 +197,6 @@ mod test {
             });
         }
     }
-
-    // if you just have a node for spawning a sub-graph,
-    // that takes inputs from inside async block (ie not symbols) and returns a graph (Output=Graph),
-    // you can call it on a new device that needs to spawn a task from that sub-graph.
-    // combined with reusing stuff from parent graph.
 
     /*
     #[morphic]
