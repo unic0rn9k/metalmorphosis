@@ -1,12 +1,12 @@
 // TODO: Replace this with mpmc::Stack
 
-use super::{Pool, ThreadID};
+use super::{Pool, ThreadId};
 use std::{
     cell::UnsafeCell,
     sync::{Arc, Mutex, MutexGuard},
 };
 
-pub struct WorkerStack(UnsafeCell<Option<ThreadID>>);
+pub struct WorkerStack(UnsafeCell<Option<ThreadId>>);
 unsafe impl Sync for WorkerStack {}
 pub struct LockedWorkerStack<'a>(MutexGuard<'a, WorkerStack>);
 
@@ -21,7 +21,7 @@ pub fn lock(src: &Mutex<WorkerStack>) -> LockedWorkerStack {
 }
 
 impl<'a> LockedWorkerStack<'a> {
-    pub fn pop(&mut self, pool: &Arc<Pool>) -> Option<ThreadID> {
+    pub fn pop(&mut self, pool: &Arc<Pool>) -> Option<ThreadId> {
         if let Some(this) = self.0.device() {
             *self.device() = pool.worker_handles[this.0].prev_unoccupied.clone();
             Some(this)
@@ -30,7 +30,7 @@ impl<'a> LockedWorkerStack<'a> {
         }
     }
 
-    pub fn insert(&mut self, other: ThreadID, pool: &Arc<Pool>) {
+    pub fn insert(&mut self, other: ThreadId, pool: &Arc<Pool>) {
         unsafe {
             (*pool.worker_handles[other.0].prev_unoccupied.0.get()) = self.device().device();
         }
@@ -43,7 +43,7 @@ impl<'a> LockedWorkerStack<'a> {
 }
 
 impl WorkerStack {
-    pub fn device(&self) -> Option<ThreadID> {
+    pub fn device(&self) -> Option<ThreadId> {
         unsafe { (*self.0.get()).clone() }
     }
 
@@ -51,7 +51,7 @@ impl WorkerStack {
         WorkerStack(UnsafeCell::new(None))
     }
 
-    pub fn from(id: &ThreadID) -> Self {
+    pub fn from(id: &ThreadId) -> Self {
         WorkerStack(UnsafeCell::new(Some(id.clone())))
     }
 

@@ -2,20 +2,20 @@ use std::{
     cell::UnsafeCell,
     sync::{
         atomic::{AtomicIsize, AtomicU16, AtomicUsize, Ordering},
-        Arc, Mutex, Weak,
+        Arc, Mutex, RwLock, Weak,
     },
     thread::{self, JoinHandle},
 };
 
-use crate::{error::Result, net, Graph, Node, DEBUG};
+use crate::{error::Result, mpmc, net, Graph, Node, DEBUG};
 
 mod locked_occupancy;
 use locked_occupancy::*;
 
 #[derive(Clone)]
-pub struct ThreadID(usize);
+pub struct ThreadId(usize);
 
-impl ThreadID {
+impl ThreadId {
     pub fn unoccupied(&self) -> WorkerStack {
         WorkerStack::from(self)
     }
@@ -24,11 +24,11 @@ impl ThreadID {
 pub struct Worker {
     task: AtomicIsize,
     prev_unoccupied: WorkerStack,
-    home: ThreadID,
+    home: ThreadId,
 }
 
 impl Worker {
-    pub fn new(home: ThreadID) -> Self {
+    pub fn new(home: ThreadId) -> Self {
         Self {
             task: AtomicIsize::new(-3),
             prev_unoccupied: home.unoccupied(),
@@ -39,7 +39,7 @@ impl Worker {
 
 pub struct Pool {
     mpi_instance: UnsafeCell<i32>, // What machine does this pool live on?
-    last_unoccupied: Arc<Mutex<WorkerStack>>,
+    last_unoccupied: Arc<RwLock<mpmc::Stack<ThreadId>>>,
     worker_handles: Vec<Arc<Worker>>,
     thread_handles: Vec<JoinHandle<()>>,
     pub parked_threads: AtomicUsize,
@@ -48,15 +48,15 @@ unsafe impl Sync for Pool {}
 
 impl Pool {
     pub fn new(graph: Weak<Graph>) -> Arc<Self> {
-        Arc::new_cyclic(|pool| {
-            //let threads = 4;
-            let threads = std::thread::available_parallelism().unwrap().into();
+        Arc::new_cyclic(|pool: &Weak<Pool>| {
+            let threads = 8;
+            //let threads = std::thread::available_parallelism().unwrap().into();
             let mut worker_handles = vec![];
             let mut thread_handles = vec![];
-            let last_unoccupied = Arc::new(Mutex::new(WorkerStack::new()));
+            let last_unoccupied = Arc::new(RwLock::new(mpmc::Stack::new(8, 1)));
 
             for thread_id in 0..threads {
-                let worker = Arc::new(Worker::new(ThreadID(thread_id)));
+                let worker = Arc::new(Worker::new(ThreadId(thread_id)));
 
                 // TODO: If the last thread has been parked, then poll from global que.
                 worker_handles.push(worker.clone());
@@ -70,7 +70,7 @@ impl Pool {
                     let pool = pool
                         .upgrade()
                         .expect("Pool was dropped before thread was initialized");
-                    lock(&last_unoccupied).insert(worker.home.clone(), &pool);
+                    last_unoccupied.read().unwrap().push(worker.home.clone(), 0);
                     let graph = graph
                         .upgrade()
                         .expect("Graph dropped before Pool was initialized");
@@ -80,18 +80,21 @@ impl Pool {
                         let mut task = worker.task.load(Ordering::Acquire);
                         while task == -1 {
                             thread::park();
+                            //println!(":p");
                             task = worker.task.load(Ordering::Acquire);
                         }
 
                         if task == -2 {
+                            println!(">>-(X _ X)->");
                             return;
                         }
 
+                        println!("Thread {} awakened", worker.home.0);
                         pool.parked_threads.fetch_sub(1, Ordering::Release);
                         graph.compute(task as usize);
-                        worker.task.store(-1, Ordering::Release);
+                        worker.task.store(-1, Ordering::Relaxed);
+                        last_unoccupied.read().unwrap().push(worker.home.clone(), 0);
 
-                        lock(&pool.last_unoccupied).insert(worker.home.clone(), &pool);
                         pool.parked_threads.fetch_add(1, Ordering::Release);
                     }
                 }));
@@ -210,12 +213,15 @@ impl Pool {
 
     pub fn assign<'a>(self: &Arc<Self>, task: impl IntoIterator<Item = &'a Arc<Node>>) {
         // TODO: Keep track of parked threads, and only take tasks, until all threads have been filled.
-        let mut occupancy = lock(&self.last_unoccupied);
+        let mut occupancy = self.last_unoccupied.write().unwrap();
+        let mut occupancy = occupancy.into_iter();
+        let mut assigned = 0;
         for task in task {
-            if task.is_being_polled.swap(true, Ordering::Acquire) {
-                if DEBUG {
-                    println!("  already being polled")
-                };
+            //println!("assigning {}", task.name);
+            if !task.try_poll() {
+                //if DEBUG {
+                //println!("  already being polled");
+                //};
 
                 // TODO: Push to global que
                 continue;
@@ -227,13 +233,14 @@ impl Pool {
             //    continue;
             //}
 
-            let device = occupancy.pop(self);
+            let device = occupancy.next();
             if let Some(device) = device {
                 let worker = &self.worker_handles[device.0];
                 worker
                     .task
                     .store(task.this_node as isize, Ordering::Release);
                 self.thread_handles[device.0].thread().unpark();
+                assigned += 1;
             } else {
                 panic!(
                     "This is so sad. Were all OUT OF DEVICES. Thought there are still {} live threads",
@@ -242,6 +249,7 @@ impl Pool {
                 // TODO: Push to global que
             }
         }
+        println!("Finished assigning to {assigned} threads");
     }
 
     pub fn num_threads(self: &Arc<Self>) -> usize {

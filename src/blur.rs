@@ -1,5 +1,5 @@
 extern crate test;
-use std::{future::Future, ops::Index};
+use std::{future::Future, ops::Index, time::Duration};
 
 use serde::{Deserialize, Serialize};
 use test::{black_box, Bencher};
@@ -37,16 +37,18 @@ fn basic_blur(b: &mut Bencher) {
             if x < 0 || x >= dim[0] as isize || y < 0 || y >= dim[1] as isize {
                 0f32
             } else {
-                img[x as usize + y as usize * dim[0]]
+                black_box(img[black_box(x as usize + y as usize * dim[0])])
             }
         };
 
         let [x, y] = dim;
-        for y in 0..*y as isize {
-            for x in 0..*x as isize {
+        for x in 0..*x as isize {
+            black_box(x);
+            for y in 0..*y as isize {
                 let p = (img(x + 1, y) + img(x - 1, y) + img(x, y)) / 3.;
                 // output[x as usize + y as usize * dim[0]] = p; // non-transposed output
-                output[y as usize + x as usize * dim[1]] = black_box(p); // transposed output
+                *black_box(&mut output[y as usize + x as usize * dim[1]]) = black_box(p);
+                // transposed output
             }
         }
     }
@@ -62,10 +64,10 @@ fn basic_blur(b: &mut Bencher) {
     //]);
 
     let input = black_box(sample(&DIM));
-    let mut output = black_box(vec![0f32; DIM[0] * DIM[1]]);
     let mut horizontal = black_box(vec![0f32; DIM[0] * DIM[1]]);
 
     b.iter(|| {
+        let mut output = black_box(vec![0f32; DIM[0] * DIM[1]]);
         let trans = [DIM[1], DIM[0]];
         blur_trans(&input, &mut horizontal, &DIM);
         //blur_x(&input, &mut horizontal, &trans);
@@ -75,8 +77,8 @@ fn basic_blur(b: &mut Bencher) {
         black_box(&output[..]);
     });
 
-    table(&input, &DIM);
-    table(&output, &DIM);
+    //table(&input, &DIM);
+    //table(&output, &DIM);
 }
 
 struct Const<T>(*const T);
@@ -133,7 +135,7 @@ impl Task for MorphicBlurStage {
             let source = source.clone().own(graph);
             Box::pin(async move {
                 let m = unsafe { Matrix((*source.await.0).as_ptr(), self.dim) };
-
+                //std::thread::sleep(Duration::from_secs(3));
                 for y in self.bound[0][1]..self.bound[1][1] {
                     for x in self.bound[0][0]..self.bound[1][0] {
                         let p = (m[[x + 1, y]] + m[[x - 1, y]] + m[[x, y]]) / 3.;
@@ -157,7 +159,7 @@ impl<'a> Task for MorphicBlur<'a> {
 
         let input = graph.spawn(Const(self.0), None);
 
-        let chunks = 4;
+        let chunks = 6;
         let chunk = (dim[1] - 1) / chunks;
         let mut output = vec![];
 
@@ -188,9 +190,22 @@ impl<'a> Task for MorphicBlur<'a> {
 
         graph.task(Box::new(move |graph, node| {
             let mut output: Vec<_> = output.iter().map(|s| s.clone().own(graph)).collect();
+            let graph = graph.clone();
             Box::pin(async move {
                 println!("=== main polled ===");
+                //for n in output.iter() {
+                //    println!(
+                //        "{} polled:{}",
+                //        n.returner.name,
+                //        n.returner
+                //            .is_being_polled
+                //            .load(std::sync::atomic::Ordering::SeqCst)
+                //    );
+                //    graph.pool.assign(&[n.returner.clone()]);
+                //}
+                graph.pool.assign(output.iter().map(|n| &n.returner));
                 for out in output.drain(..) {
+                    println!("another blur awaited");
                     black_box(out.await);
                 }
             })
@@ -233,4 +248,15 @@ fn morphic(b: &mut Bencher) {
     graph.kill(net.kill());
 }
 
-const DIM: [usize; 2] = [4, 40000];
+const DIM: [usize; 2] = [80000, 24];
+
+//struct BlurStage{
+//    input: *const [f32],
+//    output: *mut [f32],
+//    dim: [usize; 2],
+//    bound: [[usize; 2]; 2],
+//}
+//
+//impl BlurStage{
+//    fn evaluate
+//}

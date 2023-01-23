@@ -114,6 +114,8 @@ pub struct LockedSymbol<T> {
     reader: usize,
     marker: PhantomData<T>,
 }
+
+// use From<LockedSymbol> instead
 impl<T> LockedSymbol<T> {
     fn own(self, graph: &Arc<Graph>) -> OwnedSymbol<T> {
         OwnedSymbol {
@@ -133,33 +135,14 @@ pub struct OwnedSymbol<T> {
 unsafe impl<T> Send for OwnedSymbol<T> {}
 
 #[derive(Clone)]
-pub struct LockedSymbolGroup<T> {
-    returners: Vec<usize>,
-    reader: usize,
-    marker: PhantomData<T>,
+pub struct SymbolGroup<T> {
+    symbols: Vec<OwnedSymbol<T>>,
 }
 
-impl<T> LockedSymbolGroup<T> {
-    fn own(self, graph: &Arc<Graph>) -> OwnedSymbolGroup<T> {
-        OwnedSymbolGroup {
-            returners: self
-                .returners
-                .iter()
-                .map(|r| graph.nodes[*r].clone())
-                .collect(),
-            reader: graph.nodes[self.reader].clone(),
-            marker: PhantomData,
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct OwnedSymbolGroup<T> {
-    returners: Vec<Arc<Node>>,
-    reader: Arc<Node>,
-    marker: PhantomData<T>,
-}
-unsafe impl<T> Send for OwnedSymbolGroup<T> {}
+//impl<T: 'static> Future for SymbolGroup<T>{
+//    type Output = Reader<T>;
+//
+//}
 
 pub struct Reader<T>(pub *const T);
 unsafe impl<T> Send for Reader<T> {}
@@ -257,12 +240,11 @@ impl Node {
 
     fn respawn(self: &Arc<Self>, graph: &Arc<Graph>) {
         unsafe {
-            while self.is_being_polled.load(Ordering::Acquire) {
-                spin_loop()
-            }
+            while !self.try_poll() {}
             self.awaited_by.write().unwrap().undo();
+            (*self.future.get()) = (self.task)(graph, self.clone());
             self.done.store(false, Ordering::Release);
-            (*self.future.get()) = (self.task)(graph, self.clone())
+            self.is_being_polled.store(false, Ordering::Release);
         }
     }
 
@@ -280,7 +262,7 @@ impl Node {
     }
 
     fn try_poll(self: &Arc<Self>) -> bool {
-        !self.is_being_polled.swap(true, Ordering::Acquire)
+        !self.is_being_polled.swap(true, Ordering::AcqRel)
     }
 }
 
@@ -382,7 +364,9 @@ impl<T: Task> GraphBuilder<T> {
         let ret = task.init(&mut builder);
 
         if builder.is_leaf {
-            println!("Pushed leaf");
+            if DEBUG {
+                println!("Pushed leaf")
+            }
             self.leafs.write().unwrap().push_extend(builder.caller);
         } else {
             if DEBUG {
@@ -526,12 +510,8 @@ impl Graph {
             .into_iter()
             .filter_map(move |i| {
                 let reader = &self.nodes[i];
-                println!(
-                    "{} awaited by {} on {}",
-                    node.name,
-                    reader.name,
-                    self.mpi_instance()
-                );
+                //if DEBUG {
+                //}
                 if reader.mpi_instance != self.mpi_instance() {
                     net.send(net::Event::Consumes {
                         awaited: node.this_node,
@@ -544,6 +524,7 @@ impl Graph {
                 if reader.done.load(Ordering::Acquire) {
                     return None;
                 }
+                //println!("{} polled by parent {}", reader.name, node.name,);
                 Some(reader)
             })
             .collect()
@@ -551,9 +532,9 @@ impl Graph {
 
     fn assign_children_of<'a>(self: &'a Arc<Self>, node: &'a Arc<Node>) -> Option<&'a Arc<Node>> {
         let mut children = self.children(node);
-        let continue_with = children.last();
+        let continue_with = children.pop();
         self.pool.assign(children.iter().copied());
-        continue_with.copied()
+        continue_with
     }
 
     pub fn compute(self: &Arc<Self>, node: usize) {
@@ -567,7 +548,9 @@ impl Graph {
                 println!("{} compputing {}", node.mpi_instance, node.name)
             };
             if node.done.load(Ordering::Acquire) {
-                println!("already done");
+                if DEBUG {
+                    println!("already done")
+                }
                 let continue_with = self.assign_children_of(node);
 
                 node.net()
@@ -591,7 +574,9 @@ impl Graph {
 
             match unsafe { Pin::new(&mut *node.future.get()) }.poll(&mut cx) {
                 Poll::Ready(()) => {
-                    println!("* READY");
+                    if DEBUG {
+                        println!("* READY")
+                    }
                     if node.this_node == 0 {
                         node.net().send(net::Event::Kill).unwrap()
                     }
@@ -609,10 +594,7 @@ impl Graph {
                         }
                         node.is_being_polled.store(false, Ordering::Release);
 
-                        if self.nodes[awaited]
-                            .is_being_polled
-                            .swap(true, Ordering::Acquire)
-                        {
+                        if !self.nodes[awaited].try_poll() {
                             //node.awaited_by.read().unwrap().push(awaited, 0);
                             return;
                         }
@@ -645,10 +627,12 @@ impl Graph {
             n.use_net(Some(net_events.clone()));
         }
 
-        println!(
-            "Leafs: {:?}",
-            self.leafs.write().unwrap().deref_mut().deref_mut()
-        );
+        if DEBUG {
+            println!(
+                "Leafs: {:?}",
+                self.leafs.write().unwrap().deref_mut().deref_mut()
+            );
+        }
 
         self.pool
             .assign(self.leafs.write().unwrap().into_iter().filter_map(|n| {
