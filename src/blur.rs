@@ -4,7 +4,7 @@ use std::{future::Future, ops::Index, ptr::null, time::Duration};
 use serde::{Deserialize, Serialize};
 use test::{black_box, Bencher};
 
-use crate::{GraphBuilder, Symbol, Task};
+use crate::{builder::GraphBuilder, builder::Task, Symbol};
 
 fn sample(dim: &[usize; 2]) -> Vec<f32> {
     let mut sample = vec![0f32; dim[0] * dim[1]];
@@ -184,25 +184,10 @@ impl<'a> Task for MorphicBlur<'a> {
             output.push(graph.lock_symbol(out));
         }
 
-        //let input = graph.lock_symbol(input);
-        //let stage1 = graph.lock_symbol(stage1);
-        //let output = graph.lock_symbol(output);
-
         graph.task(Box::new(move |graph, _node| {
             let mut output: Vec<_> = output.iter().map(|s| s.clone().own(graph)).collect();
             Box::pin(async move {
                 println!("=== main polled ===");
-                //for n in output.iter() {
-                //    println!(
-                //        "{} polled:{}",
-                //        n.returner.name,
-                //        n.returner
-                //            .is_being_polled
-                //            .load(std::sync::atomic::Ordering::SeqCst)
-                //    );
-                //    graph.pool.assign(&[n.returner.clone()]);
-                //}
-                //graph.pool.assign(output.iter().map(|n| &n.returner));
                 for out in output.drain(..) {
                     println!("another blur awaited");
                     black_box(out.await);
@@ -214,13 +199,6 @@ impl<'a> Task for MorphicBlur<'a> {
                 println!("=== main done ===");
             })
         }))
-
-        //task!(graph, (output/*, input, stage1*/), {
-        //    //table(unsafe { &*input.await.0 }, &dim);
-        //    //table(unsafe { &*stage1.await.0 }, &[dim[1], dim[0]]);
-        //    //table(unsafe { &*output.await.0 }, &dim);
-        //    black_box(unsafe { &*output.await.0 });
-        //})
     }
 }
 
@@ -252,7 +230,7 @@ fn morphic(b: &mut Bencher) {
     graph.kill(net.kill());
 }
 
-const DIM: [usize; 2] = [8000, 24];
+const DIM: [usize; 2] = [8000, 80];
 
 //struct BlurStage{
 //    input: *const [f32],

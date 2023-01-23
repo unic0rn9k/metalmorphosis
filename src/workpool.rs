@@ -9,23 +9,20 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use crate::{error::Result, mpmc, net, Graph, Node, DEBUG};
-
-mod locked_occupancy;
-use locked_occupancy::*;
+use crate::{error::Result, mpsc, net, Graph, Node, DEBUG};
 
 #[derive(Clone, Debug)]
 pub struct ThreadId(usize);
 
-impl ThreadId {
-    pub fn unoccupied(&self) -> WorkerStack {
-        WorkerStack::from(self)
-    }
-}
+//impl ThreadId {
+//    pub fn unoccupied(&self) -> WorkerStack {
+//        WorkerStack::from(self)
+//    }
+//}
 
 pub struct Worker {
     task: AtomicIsize,
-    prev_unoccupied: WorkerStack,
+    //prev_unoccupied: WorkerStack,
     home: ThreadId,
 }
 
@@ -33,7 +30,7 @@ impl Worker {
     pub fn new(home: ThreadId) -> Self {
         Self {
             task: AtomicIsize::new(-3),
-            prev_unoccupied: home.unoccupied(),
+            //prev_unoccupied: home.unoccupied(),
             home,
         }
     }
@@ -41,7 +38,7 @@ impl Worker {
 
 pub struct Pool {
     mpi_instance: UnsafeCell<i32>, // What machine does this pool live on?
-    last_unoccupied: Arc<RwLock<mpmc::Stack<ThreadId>>>,
+    last_unoccupied: Arc<RwLock<mpsc::Stack<ThreadId>>>,
     worker_handles: Vec<Arc<Worker>>,
     thread_handles: Vec<JoinHandle<()>>,
     pub parked_threads: AtomicUsize,
@@ -55,7 +52,7 @@ impl Pool {
             //let threads = std::thread::available_parallelism().unwrap().into();
             let mut worker_handles = vec![];
             let mut thread_handles = vec![];
-            let last_unoccupied = Arc::new(RwLock::new(mpmc::Stack::new(8, 1)));
+            let last_unoccupied = Arc::new(RwLock::new(mpsc::Stack::new(8, 1)));
 
             for thread_id in 0..threads {
                 let worker = Arc::new(Worker::new(ThreadId(thread_id)));
