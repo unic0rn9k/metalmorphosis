@@ -92,7 +92,9 @@ impl Networker {
                             ),
 
                             Event::NodeDone { awaited } => unsafe {
-                                println!("{awaited} done at {}", self.world.rank());
+                                if DEBUG {
+                                    println!("net:{} {awaited} done", self.graph.mpi_instance());
+                                }
                                 let node = &self.graph.nodes[awaited];
                                 (
                                     &self.awaited_at[awaited][..],
@@ -105,7 +107,9 @@ impl Networker {
                             },
 
                             Event::Consumes { awaited, at } => {
-                                println!("C... {awaited} awaited at {at}");
+                                if DEBUG {
+                                    println!("net: {awaited} awaited at {at}");
+                                }
                                 self.awaited_at[awaited].push(at);
                                 continue;
                             }
@@ -113,7 +117,9 @@ impl Networker {
 
                         mpi::request::scope(|scope| {
                             for dst in dst {
-                                println!("Sending results to {dst}");
+                                if DEBUG {
+                                    println!("Sending results to {dst}");
+                                }
                                 let _ = WaitGuard::from(
                                     self.world.process_at_rank(*dst).immediate_send(scope, &msg),
                                 );
@@ -134,7 +140,7 @@ impl Networker {
                 }
             });
             if kill_network {
-                println!("Exiting net...");
+                println!("Net down...");
                 return;
             };
         }
@@ -150,33 +156,39 @@ impl Networker {
         match msg {
             Kill => return true,
             AwaitNode { awaited } => {
-                println!(
-                    "mpi:{} awaited {}",
-                    self.graph.mpi_instance(),
-                    self.graph.nodes[awaited].name,
-                );
+                if DEBUG {
+                    println!(
+                        "net:{} awaited {}",
+                        self.graph.mpi_instance(),
+                        self.graph.nodes[awaited].name,
+                    );
+                }
                 self.awaited_at[awaited].push(src);
 
                 self.graph.pool.assign([&self.graph.nodes[awaited]]);
             }
             NodeReady { data, node } => {
-                println!("mpi:{} external ready {}", self.graph.mpi_instance(), node);
+                if DEBUG {
+                    println!(
+                        "net:{} external node {} ready",
+                        self.graph.mpi_instance(),
+                        node
+                    );
+                }
                 let node = self.graph.nodes[node].clone();
                 //if node.is_being_polled.swap(true, Ordering::Acquire) {
                 //    panic!("NodeReady event for in-use node: {}", node.name);
                 //}
-                while !node.try_poll("net") {}
+                //while !node.try_poll("net") {}
 
                 node.done.store(true, Ordering::Release);
                 unsafe { (*node.output.get()).deserialize(&data) }
 
                 //self.graph.print();
                 self.graph.assign_children_of(&node);
-                println!(
-                    "{} ::NET:: node {} ready",
-                    self.graph.mpi_instance(),
-                    node.name
-                );
+                if DEBUG {
+                    println!("net:{} node {} ready", self.graph.mpi_instance(), node.name);
+                }
             }
         }
         false
