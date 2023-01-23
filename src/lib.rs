@@ -80,8 +80,8 @@ pub mod mpmc;
 mod net;
 mod workpool;
 
-use dummy_net as net_;
-//use net as net_;
+//use dummy_net as net_;
+use net as net_;
 
 use error::{Error, Result};
 use mpmc::UndoStack;
@@ -100,7 +100,7 @@ use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool, AtomicIsize};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, RwLock};
 use std::task::{Context, Poll, Wake};
 
@@ -201,7 +201,7 @@ pub fn keep_local_schedular(_: Vec<&Node>, _: usize) -> usize {
 
 // Node could be split into two structs. One for everything that needs unsafe interior mutability. And one for the other stuff.
 // TODO: Benchmark with and without repr
-#[repr(align(128))]
+//#[repr(align(128))]
 pub struct Node {
     name: &'static str,
     task: AsyncFunction,
@@ -240,11 +240,12 @@ impl Node {
 
     fn respawn(self: &Arc<Self>, graph: &Arc<Graph>) {
         unsafe {
-            while !self.try_poll() {}
+            while !self.try_poll("Respawn") {}
             self.awaited_by.write().unwrap().undo();
             (*self.future.get()) = (self.task)(graph, self.clone());
             self.done.store(false, Ordering::Release);
             self.is_being_polled.store(false, Ordering::Release);
+            assert!(!self.is_being_polled.load(Ordering::Acquire));
         }
     }
 
@@ -261,8 +262,14 @@ impl Node {
         unsafe { &mut *((*self.output.get()).mut_ptr() as *mut T) }
     }
 
-    fn try_poll(self: &Arc<Self>) -> bool {
-        !self.is_being_polled.swap(true, Ordering::AcqRel)
+    fn try_poll(self: &Arc<Self>, src: &str) -> bool {
+        if DEBUG {
+            println!(
+                "trying to poll {}::{} from {}",
+                self.this_node, self.name, src
+            );
+        }
+        !self.is_being_polled.swap(true, Ordering::Acquire)
     }
 }
 
@@ -373,13 +380,13 @@ impl<T: Task> GraphBuilder<T> {
                 println!("NOT_LEAF: {} <- {:?}", self.caller, builder.awaits)
             };
 
-            for awaits in &builder.awaits {
-                self.nodes.borrow_mut()[*awaits]
-                    .awaited_by
-                    .get_mut()
-                    .unwrap()
-                    .push_extend(self.caller)
-            }
+            //for awaits in &builder.awaits {
+            //    self.nodes.borrow_mut()[*awaits]
+            //        .awaited_by
+            //        .get_mut()
+            //        .unwrap()
+            //        .push_extend(self.caller)
+            //}
         }
         ret
     }
@@ -433,7 +440,12 @@ impl<T: Task> GraphBuilder<T> {
 
     pub fn lock_symbol<U>(&mut self, s: Symbol<U>) -> LockedSymbol<U> {
         self.is_leaf = false;
-        self.awaits.push(s.0);
+        //self.awaits.push(s.0);
+        self.nodes.borrow_mut()[s.0]
+            .awaited_by
+            .get_mut()
+            .unwrap()
+            .push_extend(self.caller);
         LockedSymbol {
             returner: s.0,
             reader: self.caller,
@@ -524,7 +536,9 @@ impl Graph {
                 if reader.done.load(Ordering::Acquire) {
                     return None;
                 }
-                //println!("{} polled by parent {}", reader.name, node.name,);
+                if DEBUG {
+                    println!("{} polled by parent {}", reader.name, node.name,);
+                }
                 Some(reader)
             })
             .collect()
@@ -537,15 +551,13 @@ impl Graph {
         continue_with
     }
 
-    pub fn compute(self: &Arc<Self>, node: usize) {
+    pub fn compute<'a>(self: &'a Arc<Self>, mut node: &'a Arc<Node>) {
         let waker = Arc::new(NilWaker).into();
         let mut cx = Context::from_waker(&waker);
 
-        let mut node = &self.nodes[node];
-
         loop {
             if DEBUG {
-                println!("{} compputing {}", node.mpi_instance, node.name)
+                println!("compputing {}::{}", node.this_node, node.name)
             };
             if node.done.load(Ordering::Acquire) {
                 if DEBUG {
@@ -562,7 +574,7 @@ impl Graph {
                 node.is_being_polled.store(false, Ordering::Release);
 
                 match continue_with {
-                    Some(next) if next.try_poll() => node = next,
+                    Some(next) if next.try_poll("Continue to child") => node = next,
                     _ => return,
                 }
                 continue;
@@ -575,7 +587,7 @@ impl Graph {
             match unsafe { Pin::new(&mut *node.future.get()) }.poll(&mut cx) {
                 Poll::Ready(()) => {
                     if DEBUG {
-                        println!("* READY")
+                        println!("* {} READY", node.this_node)
                     }
                     if node.this_node == 0 {
                         node.net().send(net::Event::Kill).unwrap()
@@ -594,9 +606,10 @@ impl Graph {
                         }
                         node.is_being_polled.store(false, Ordering::Release);
 
-                        if !self.nodes[awaited].try_poll() {
+                        while !self.nodes[awaited].try_poll("Continue to parent") {
+                            // FIXME: this should not be blocking
                             //node.awaited_by.read().unwrap().push(awaited, 0);
-                            return;
+                            //return;
                         }
 
                         node = &self.nodes[awaited]
@@ -627,6 +640,8 @@ impl Graph {
             n.use_net(Some(net_events.clone()));
         }
 
+        //self.pool.assign([&self.nodes[0]]);
+
         if DEBUG {
             println!(
                 "Leafs: {:?}",
@@ -634,22 +649,34 @@ impl Graph {
             );
         }
 
-        self.pool
-            .assign(self.leafs.write().unwrap().into_iter().filter_map(|n| {
-                // FIXME: Initialy push children to leaf_node.awaiter
-                //        (1 and 2 arent leaf nodes. Only X has no children)
-                //        this is fine with pri-que, if leafs are just pushed with higher priority
-                // TODO:  If there are devices left, after assigning leaf nodes.
-                //        Then start assigning children.
-                if DEBUG {
-                    println!("LEAF: {n}")
-                }
-                if self.nodes[n].mpi_instance == self.mpi_instance() {
-                    Some(&self.nodes[n])
-                } else {
-                    None
-                }
-            }));
+        let mut leaves = self.leafs.write().unwrap();
+        let mut leaves = leaves.into_iter();
+        let continue_with = leaves.next();
+        self.pool.assign(leaves.filter_map(|n| {
+            // FIXME: Initialy push children to leaf_node.awaiter
+            //        (1 and 2 arent leaf nodes. Only X has no children)
+            //        this is fine with pri-que, if leafs are just pushed with higher priority
+            // TODO:  If there are devices left, after assigning leaf nodes.
+            //        Then start assigning children.
+            if DEBUG {
+                println!("LEAF: {n}")
+            }
+            if self.nodes[n].mpi_instance == self.mpi_instance() {
+                Some(&self.nodes[n])
+            } else {
+                None
+            }
+        }));
+        if let Some(node) = continue_with {
+            let node = &self.nodes[node];
+            if node.try_poll("Root") {
+                self.compute(node)
+            }
+        }
+        //while !self.nodes[0].done.load(Ordering::Acquire) {
+        //    while !self.nodes[0].try_poll("Main spin") {}
+        //    self.compute(&self.nodes[0])
+        //}
         //if self.mpi_instance() == 0 {
         //    self.pool.assign([self.nodes[0].clone()])
         //}
@@ -784,7 +811,7 @@ mod test {
         type InitOutput = Symbol<f32>;
         type Output = f32;
         fn init(self, graph: &mut GraphBuilder<Self>) -> Self::InitOutput {
-            //graph.set_mpi_instance(1);
+            graph.set_mpi_instance(1);
             task!(graph, (), 2.);
             graph.this_node()
         }

@@ -65,6 +65,7 @@ pub struct Networker {
 
 impl Networker {
     pub fn run(&mut self) {
+        println!("running net...");
         let size = self.world.size();
         loop {
             let mut buffer = [0u8; 1024];
@@ -149,36 +150,33 @@ impl Networker {
         match msg {
             Kill => return true,
             AwaitNode { awaited } => {
-                if DEBUG {
-                    println!(
-                        "mpi:{} awaited {}",
-                        self.graph.mpi_instance(),
-                        self.graph.nodes[awaited].name,
-                    )
-                };
+                println!(
+                    "mpi:{} awaited {}",
+                    self.graph.mpi_instance(),
+                    self.graph.nodes[awaited].name,
+                );
                 self.awaited_at[awaited].push(src);
 
                 self.graph.pool.assign([&self.graph.nodes[awaited]]);
             }
             NodeReady { data, node } => {
+                println!("mpi:{} external ready {}", self.graph.mpi_instance(), node);
                 let node = self.graph.nodes[node].clone();
                 //if node.is_being_polled.swap(true, Ordering::Acquire) {
                 //    panic!("NodeReady event for in-use node: {}", node.name);
                 //}
-                while !node.try_poll() {}
+                while !node.try_poll("net") {}
 
                 node.done.store(true, Ordering::Release);
                 unsafe { (*node.output.get()).deserialize(&data) }
 
                 //self.graph.print();
                 self.graph.assign_children_of(&node);
-                if DEBUG {
-                    println!(
-                        "{} ::NET:: node {} ready",
-                        self.graph.mpi_instance(),
-                        node.name
-                    )
-                };
+                println!(
+                    "{} ::NET:: node {} ready",
+                    self.graph.mpi_instance(),
+                    node.name
+                );
             }
         }
         false

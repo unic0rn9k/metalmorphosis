@@ -37,7 +37,7 @@ pub struct Stack<T> {
 unsafe impl<T> Sync for Stack<T> {}
 unsafe impl<T> Send for Stack<T> {}
 
-impl<T: Clone> Stack<T> {
+impl<T: Clone + Debug> Stack<T> {
     pub fn fix_capacity(&mut self) {
         self.nodes.append(&mut vec![
             StackSlot(UnsafeCell::new(None));
@@ -46,16 +46,31 @@ impl<T: Clone> Stack<T> {
     }
 
     pub fn push_extend(&mut self, val: T) {
+        if DEBUG {
+            println!("[] {val:?} pushed to stack");
+        }
         self.capacity += 1;
         self.nodes.push(StackSlot(UnsafeCell::new(Some(val))));
         self.next.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn push(&self, val: T, p: usize) {
+        if DEBUG {
+            println!("[] {val:?} pushed to stack");
+        }
         assert!(p < self.priorities);
-        let i = self.next.fetch_add(1, Ordering::Relaxed);
+        let i = self.next.fetch_add(1, Ordering::AcqRel);
         assert!(i < self.capacity);
         unsafe { *self.nodes[i + self.capacity * p].0.get() = Some(val) };
+    }
+
+    pub fn pop(&mut self) -> Option<T> {
+        if self.next.load(Ordering::Acquire) == 0 {
+            None
+        } else {
+            let i = self.next.fetch_sub(1, Ordering::AcqRel);
+            self.nodes[i - 1].0.get_mut().take()
+        }
     }
 
     pub fn new(capacity: usize, p: usize) -> Self {
@@ -85,7 +100,7 @@ impl<'a, T> IntoIterator for &'a mut Stack<T> {
     fn into_iter(self) -> Self::IntoIter {
         StackIter(
             self,
-            self.next.load(Ordering::Relaxed) + self.capacity * (self.priorities - 1),
+            self.next.load(Ordering::Acquire) + self.capacity * (self.priorities - 1),
         )
     }
 }
@@ -110,7 +125,7 @@ impl<'a, T> Drop for StackIter<'a, T> {
     fn drop(&mut self) {
         self.0
             .next
-            .store(self.1 % self.0.capacity, Ordering::Relaxed)
+            .store(self.1 % self.0.capacity, Ordering::Release)
     }
 }
 
@@ -120,7 +135,7 @@ impl<T: Clone> Clone for Stack<T> {
             priorities: self.priorities,
             capacity: self.capacity,
             nodes: self.nodes.clone(),
-            next: AtomicUsize::new(self.next.load(Ordering::Relaxed)),
+            next: AtomicUsize::new(self.next.load(Ordering::Acquire)),
         }
     }
 }
@@ -175,6 +190,8 @@ impl<T: Clone> DerefMut for UndoStack<T> {
 
 extern crate test;
 use test::Bencher;
+
+use crate::DEBUG;
 
 #[bench]
 fn stack(b: &mut Bencher) {

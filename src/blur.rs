@@ -1,5 +1,5 @@
 extern crate test;
-use std::{future::Future, ops::Index, time::Duration};
+use std::{future::Future, ops::Index, ptr::null, time::Duration};
 
 use serde::{Deserialize, Serialize};
 use test::{black_box, Bencher};
@@ -9,9 +9,9 @@ use crate::{GraphBuilder, Symbol, Task};
 fn sample(dim: &[usize; 2]) -> Vec<f32> {
     let mut sample = vec![0f32; dim[0] * dim[1]];
     for x in 0..dim[0] {
-        let k = dim[1] as f32 / 2.;
-        let y = (x as f32 * 0.1).sin() * k + k;
-        sample[x + y.min(dim[1] as f32 - 1.) as usize * dim[0]] = 1.;
+        let k = (dim[1] as f32 / 2.) - 2.;
+        let y = (x as f32 * 0.1).sin() * k + k + 2.;
+        sample[x + y as usize * dim[0]] = 1.;
     }
     sample
 }
@@ -159,7 +159,7 @@ impl<'a> Task for MorphicBlur<'a> {
 
         let input = graph.spawn(Const(self.0), None);
 
-        let chunks = 6;
+        let chunks = 4;
         let chunk = (dim[1] - 1) / chunks;
         let mut output = vec![];
 
@@ -188,9 +188,8 @@ impl<'a> Task for MorphicBlur<'a> {
         //let stage1 = graph.lock_symbol(stage1);
         //let output = graph.lock_symbol(output);
 
-        graph.task(Box::new(move |graph, node| {
+        graph.task(Box::new(move |graph, _node| {
             let mut output: Vec<_> = output.iter().map(|s| s.clone().own(graph)).collect();
-            let graph = graph.clone();
             Box::pin(async move {
                 println!("=== main polled ===");
                 //for n in output.iter() {
@@ -203,11 +202,16 @@ impl<'a> Task for MorphicBlur<'a> {
                 //    );
                 //    graph.pool.assign(&[n.returner.clone()]);
                 //}
-                graph.pool.assign(output.iter().map(|n| &n.returner));
+                //graph.pool.assign(output.iter().map(|n| &n.returner));
                 for out in output.drain(..) {
                     println!("another blur awaited");
                     black_box(out.await);
+                    //unsafe {
+                    //    table(&*out.await.0, &dim);
+                    //}
                 }
+
+                println!("=== main done ===");
             })
         }))
 
@@ -248,7 +252,7 @@ fn morphic(b: &mut Bencher) {
     graph.kill(net.kill());
 }
 
-const DIM: [usize; 2] = [80000, 24];
+const DIM: [usize; 2] = [8000, 24];
 
 //struct BlurStage{
 //    input: *const [f32],

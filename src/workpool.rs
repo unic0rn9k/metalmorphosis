@@ -1,7 +1,9 @@
 use std::{
     cell::UnsafeCell,
+    hint::black_box,
+    ops::DerefMut,
     sync::{
-        atomic::{AtomicIsize, AtomicU16, AtomicUsize, Ordering},
+        atomic::{fence, AtomicIsize, AtomicU16, AtomicUsize, Ordering},
         Arc, Mutex, RwLock, Weak,
     },
     thread::{self, JoinHandle},
@@ -12,7 +14,7 @@ use crate::{error::Result, mpmc, net, Graph, Node, DEBUG};
 mod locked_occupancy;
 use locked_occupancy::*;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct ThreadId(usize);
 
 impl ThreadId {
@@ -76,11 +78,16 @@ impl Pool {
                         .expect("Graph dropped before Pool was initialized");
                     worker.task.store(-1, Ordering::Release);
 
+                    if DEBUG {
+                        println!("thread inited");
+                    }
                     loop {
                         let mut task = worker.task.load(Ordering::Acquire);
                         while task == -1 {
                             thread::park();
-                            //println!(":p");
+                            if DEBUG {
+                                println!(":p");
+                            }
                             task = worker.task.load(Ordering::Acquire);
                         }
 
@@ -89,9 +96,11 @@ impl Pool {
                             return;
                         }
 
-                        println!("Thread {} awakened", worker.home.0);
+                        if DEBUG {
+                            println!("++ Thread {} awakened to {}", worker.home.0, task);
+                        }
                         pool.parked_threads.fetch_sub(1, Ordering::Release);
-                        graph.compute(task as usize);
+                        graph.compute(&graph.nodes[task as usize]);
                         worker.task.store(-1, Ordering::Relaxed);
                         last_unoccupied.read().unwrap().push(worker.home.clone(), 0);
 
@@ -121,6 +130,7 @@ impl Pool {
             .iter()
             .any(|w| w.task.load(Ordering::Acquire) == -3)
         {}
+        //black_box(self.last_unoccupied.write().unwrap().into_iter());
     }
 
     pub fn finish(self: &Arc<Self>) {
@@ -211,20 +221,21 @@ impl Pool {
         }
     }*/
 
-    pub fn assign<'a>(self: &Arc<Self>, task: impl IntoIterator<Item = &'a Arc<Node>>) {
+    pub fn assign<'a>(self: &Arc<Self>, tasks: impl IntoIterator<Item = &'a Arc<Node>>) {
         // TODO: Keep track of parked threads, and only take tasks, until all threads have been filled.
         let mut occupancy = self.last_unoccupied.write().unwrap();
-        let mut occupancy = occupancy.into_iter();
         let mut assigned = 0;
-        for task in task {
+        let mut tasks = tasks.into_iter();
+        for task in &mut tasks {
             //println!("assigning {}", task.name);
-            if !task.try_poll() {
-                //if DEBUG {
-                //println!("  already being polled");
-                //};
+            while !task.try_poll("Pool::assign") {
+                // FIXME: this should not be blocking
+                if DEBUG {
+                    println!("  already being polled");
+                };
 
                 // TODO: Push to global que
-                continue;
+                //continue;
             }
             //if task.mpi_instance != self.mpi_instance() {
             //    task.net()
@@ -233,7 +244,7 @@ impl Pool {
             //    continue;
             //}
 
-            let device = occupancy.next();
+            let device = occupancy.pop();
             if let Some(device) = device {
                 let worker = &self.worker_handles[device.0];
                 worker
@@ -242,14 +253,21 @@ impl Pool {
                 self.thread_handles[device.0].thread().unpark();
                 assigned += 1;
             } else {
+                //self.assign([task]);
+                //self.assign(tasks);
+                //return;
+
                 panic!(
-                    "This is so sad. Were all OUT OF DEVICES. Thought there are still {} live threads",
-                    self.thread_handles.iter().map(|t| !t.is_finished() as u32).sum::<u32>()
+                    "This is so sad. Only had space for {assigned} tasks. Thought there are {} parked threads. Occupancy: {:?}",
+                    self.parked_threads.load(Ordering::SeqCst),
+                    occupancy.deref_mut()
                 )
                 // TODO: Push to global que
             }
         }
-        println!("Finished assigning to {assigned} threads");
+        if DEBUG {
+            println!("Finished assigning to {assigned} threads");
+        }
     }
 
     pub fn num_threads(self: &Arc<Self>) -> usize {
