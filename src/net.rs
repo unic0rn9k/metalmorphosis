@@ -181,8 +181,8 @@ impl Networker {
                 //}
                 //while !node.try_poll("net") {}
 
-                node.done.store(true, Ordering::Release);
                 unsafe { (*node.output.get()).deserialize(&data) }
+                node.done.store(true, Ordering::Release);
 
                 //self.graph.print();
                 self.graph.assign_children_of(&node);
