@@ -13,8 +13,6 @@ use std::{
 // pop : [1,2, ]   2
 // push: [1,2, ,4] 3
 // pop : [1,2, ,4] 2
-//
-//
 
 // If task sets done to true, before polling from awaiters
 // then new awaiters will never be pushed while its reading.
@@ -46,18 +44,12 @@ impl<T: Clone + Debug> Stack<T> {
     }
 
     pub fn push_extend(&mut self, val: T) {
-        if DEBUG {
-            println!("[] {val:?} pushed to stack");
-        }
         self.capacity += 1;
         self.nodes.push(StackSlot(UnsafeCell::new(Some(val))));
         self.next.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn push(&self, val: T, p: usize) {
-        if DEBUG {
-            println!("[] {val:?} pushed to stack");
-        }
         assert!(p < self.priorities);
         let i = self.next.fetch_add(1, Ordering::AcqRel);
         assert!(i < self.capacity);
@@ -190,8 +182,6 @@ impl<T: Clone> DerefMut for UndoStack<T> {
 
 extern crate test;
 use test::Bencher;
-
-use crate::DEBUG;
 
 #[bench]
 fn stack(b: &mut Bencher) {

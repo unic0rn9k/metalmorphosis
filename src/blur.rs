@@ -53,16 +53,6 @@ fn basic_blur(b: &mut Bencher) {
         }
     }
 
-    //#[rustfmt::skip]
-    //let input = black_box([
-    //  0f32,0f32,0f32,0f32,0f32,0f32,
-    //  0f32,0f32,0f32,0f32,0f32,0f32,
-    //  0f32,0f32,1f32,1f32,0f32,0f32,
-    //  0f32,0f32,0f32,1f32,0f32,0f32,
-    //  0f32,0f32,0f32,0f32,0f32,0f32,
-    //  0f32,0f32,0f32,0f32,0f32,0f32,
-    //]);
-
     let input = black_box(sample(&DIM));
     let mut horizontal = black_box(vec![0f32; DIM[0] * DIM[1]]);
 
@@ -70,9 +60,7 @@ fn basic_blur(b: &mut Bencher) {
         let mut output = black_box(vec![0f32; DIM[0] * DIM[1]]);
         let trans = [DIM[1], DIM[0]];
         blur_trans(&input, &mut horizontal, &DIM);
-        //blur_x(&input, &mut horizontal, &trans);
         blur_trans(&horizontal, &mut output, &trans);
-        //blur_x(&horizontal, &mut output, &DIM);
 
         black_box(&output[..]);
     });

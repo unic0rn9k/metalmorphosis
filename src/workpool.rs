@@ -47,7 +47,7 @@ unsafe impl Sync for Pool {}
 impl Pool {
     pub fn new(graph: Weak<Graph>) -> Arc<Self> {
         Arc::new_cyclic(|pool: &Weak<Pool>| {
-            let threads = 8;
+            let threads = 4;
             //let threads = std::thread::available_parallelism().unwrap().into();
             let mut worker_handles = vec![];
             let mut thread_handles = vec![];
@@ -74,16 +74,10 @@ impl Pool {
                         .expect("Graph dropped before Pool was initialized");
                     worker.task.store(-1, Ordering::Release);
 
-                    if DEBUG {
-                        println!("thread inited");
-                    }
                     loop {
                         let mut task = worker.task.load(Ordering::Acquire);
                         while task == -1 {
                             thread::park();
-                            if DEBUG {
-                                println!(":p");
-                            }
                             task = worker.task.load(Ordering::Acquire);
                         }
 
@@ -93,7 +87,7 @@ impl Pool {
                         }
 
                         if DEBUG {
-                            println!("++ Thread {} awakened to {}", worker.home.0, task);
+                            println!("++ Thread {} unparked", worker.home.0);
                         }
                         pool.parked_threads.fetch_sub(1, Ordering::Release);
                         graph.compute(&graph.nodes[task as usize]);
@@ -165,80 +159,12 @@ impl Pool {
         unsafe { *self.mpi_instance.get() }
     }
 
-    // Executor tries to reuse same threads. But doesn't try to use same threads for the same tasks
-    /*pub fn assign<'a>(self: &Arc<Self>, task: impl IntoIterator<Item = &'a Arc<Node>>) -> bool {
-        // TODO: Keep track of parked threads, and only take tasks, until all threads have been filled.
-        let mut occupancy = lock(&self.last_unoccupied);
-        let mut task = task.into_iter();
-        loop {
-            //if task.mpi_instance != self.mpi_instance() {
-            //    task.net()
-            //        .send(net::Event::AwaitNode(task.clone()))
-            //        .unwrap();
-            //    continue;
-            //}
-
-            let mut device = occupancy.pop(self);
-            //while device.is_none() {
-            //    device = occupancy.pop(self);
-            //}
-            if let Some(device) = device {
-                let task = match task.next() {
-                    Some(task) => {
-                        if task.is_being_polled.swap(true, Ordering::Acquire) {
-                            if DEBUG {
-                                println!("  already being polled")
-                            };
-
-                            // TODO: Push to global que
-                            continue;
-                        } else {
-                            task
-                        }
-                    }
-                    None => {
-                        occupancy.insert(device, self);
-                        return false;
-                    }
-                };
-                let worker = &self.worker_handles[device.0];
-                worker
-                    .task
-                    .store(task.this_node as isize, Ordering::Release);
-                self.thread_handles[device.0].thread().unpark();
-            } else {
-                //return false;
-                panic!(
-                    "This is so sad. Were all OUT OF DEVICES. Thought there are still {} live threads",
-                    self.thread_handles.iter().map(|t| !t.is_finished() as u32).sum::<u32>()
-                )
-                // TODO: Push to global que
-            }
-        }
-    }*/
-
     pub fn assign<'a>(self: &Arc<Self>, tasks: impl IntoIterator<Item = &'a Arc<Node>>) {
-        // TODO: Keep track of parked threads, and only take tasks, until all threads have been filled.
         let mut occupancy = self.last_unoccupied.write().unwrap();
         let mut assigned = 0;
         let mut tasks = tasks.into_iter();
         for task in &mut tasks {
-            //println!("assigning {}", task.name);
-            while !task.try_poll("Pool::assign") {
-                // FIXME: this should not be blocking
-                if DEBUG {
-                    println!("  already being polled");
-                };
-
-                // TODO: Push to global que
-                //continue;
-            }
-            //if task.mpi_instance != self.mpi_instance() {
-            //    task.net()
-            //        .send(net::Event::AwaitNode(task.clone()))
-            //        .unwrap();
-            //    continue;
-            //}
+            while !task.try_poll("Pool::assign") {}
 
             let device = occupancy.pop();
             if let Some(device) = device {
@@ -249,20 +175,12 @@ impl Pool {
                 self.thread_handles[device.0].thread().unpark();
                 assigned += 1;
             } else {
-                //self.assign([task]);
-                //self.assign(tasks);
-                //return;
-
                 panic!(
-                    "This is so sad. Only had space for {assigned} tasks. Thought there are {} parked threads. Occupancy: {:?}",
+                    "Only had space for {assigned} tasks. There are {} parked threads. Occupancy: {:?}",
                     self.parked_threads.load(Ordering::SeqCst),
                     occupancy.deref_mut()
                 )
-                // TODO: Push to global que
             }
-        }
-        if DEBUG {
-            println!("Finished assigning to {assigned} threads");
         }
     }
 

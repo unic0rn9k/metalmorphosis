@@ -12,24 +12,6 @@ use std::sync::{
 
 use crate::{Graph, DEBUG};
 
-// TODO: Make networking a task.
-// Strictly it would only need to be polled once a node has finished.
-// In that case, it would be most efficient to read all external events, before acting on internal events.
-
-// If node finished, send await to networker
-// If node awaited, send Brodcast
-
-// Implementer nu:
-// - distribution
-// - call mpi time
-// - method for getting/setting mpi_instance of node with symbol
-//
-// - NodeBuilder
-// - method 'scheduler' that takes fn(node)->mpi_instance
-// - call 'schedular' in Graph on all nodes, in topological ordering, spuriously
-
-// Dont need seperate Message and Event.
-// When send NodeReady, just serialize node.output once pr recipient.
 pub enum Event {
     Kill,
     AwaitNode { awaited: usize },
@@ -93,7 +75,7 @@ impl Networker {
 
                             Event::NodeDone { awaited } => unsafe {
                                 if DEBUG {
-                                    println!("net:{} {awaited} done", self.graph.mpi_instance());
+                                    println!("net:{} {awaited} done", self.rank());
                                 }
                                 let node = &self.graph.nodes[awaited];
                                 (
@@ -108,7 +90,7 @@ impl Networker {
 
                             Event::Consumes { awaited, at } => {
                                 if DEBUG {
-                                    println!("net: {awaited} awaited at {at}");
+                                    println!("net:{} {awaited} awaited at {at}", self.rank());
                                 }
                                 self.awaited_at[awaited].push(at);
                                 continue;
@@ -159,7 +141,7 @@ impl Networker {
                 if DEBUG {
                     println!(
                         "net:{} awaited {}",
-                        self.graph.mpi_instance(),
+                        self.rank(),
                         self.graph.nodes[awaited].name,
                     );
                 }
@@ -169,25 +151,16 @@ impl Networker {
             }
             NodeReady { data, node } => {
                 if DEBUG {
-                    println!(
-                        "net:{} external node {} ready",
-                        self.graph.mpi_instance(),
-                        node
-                    );
+                    println!("net:{} external node {} ready", self.rank(), node);
                 }
                 let node = self.graph.nodes[node].clone();
-                //if node.is_being_polled.swap(true, Ordering::Acquire) {
-                //    panic!("NodeReady event for in-use node: {}", node.name);
-                //}
-                //while !node.try_poll("net") {}
 
                 unsafe { (*node.output.get()).deserialize(&data) }
                 node.done.store(true, Ordering::Release);
 
-                //self.graph.print();
                 self.graph.assign_children_of(&node);
                 if DEBUG {
-                    println!("net:{} node {} ready", self.graph.mpi_instance(), node.name);
+                    println!("net:{} node {} ready", self.rank(), node.name);
                 }
             }
         }

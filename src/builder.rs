@@ -8,7 +8,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::{mpsc, AsyncFunction, Graph, LockedSymbol, Node, Symbol, DEBUG};
+use crate::{mpsc, AsyncFunction, Graph, LockedSymbol, Node, Symbol};
 
 pub struct GraphBuilder<T: Task + ?Sized> {
     caller: usize,
@@ -37,9 +37,6 @@ impl<T: Task> GraphBuilder<T> {
         let len = self.nodes.borrow().len();
         self.push(Node::new::<U::Output>(len, out));
         self.nodes.borrow_mut()[len].name = U::name();
-        if DEBUG {
-            println!("{}", U::name())
-        };
         let mut builder = self.next();
         let ret = task.init(&mut builder);
         if builder.is_leaf {
@@ -160,7 +157,9 @@ mod test {
         type Output = f32;
         fn init(self, graph: &mut GraphBuilder<Self>) -> Self::InitOutput {
             graph.set_mpi_instance(1);
+
             task!(graph, (), 2.);
+
             graph.this_node()
         }
     }
@@ -171,7 +170,9 @@ mod test {
         type Output = f32;
         fn init(self, graph: &mut GraphBuilder<Self>) -> Self::InitOutput {
             let x = graph.lock_symbol(self.0);
+
             task!(graph, (x), unsafe { *(x.await.0) } * 3. + 4.);
+
             graph.this_node()
         }
     }
@@ -185,14 +186,18 @@ mod test {
             let x2 = graph.spawn(X, None);
             let f = graph.spawn(F(x), None);
             let f2 = graph.spawn(F(x2), None);
+
             graph.mutate_node(f2, |f| f.mpi_instance = 1);
+
             let f = graph.lock_symbol(f);
             let f2 = graph.lock_symbol(f2);
             let x = graph.lock_symbol(x);
+
             task!(graph, (x, f, f2), {
                 let y = unsafe { *f.await.0 };
                 let y2 = unsafe { *f2.await.0 };
                 let x = unsafe { *x.await.0 };
+
                 println!("f({x}) = ({y}) = {y2}")
             });
         }
