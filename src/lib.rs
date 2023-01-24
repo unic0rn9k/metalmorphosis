@@ -75,14 +75,14 @@
 #![feature(new_uninit)]
 
 pub mod builder;
-mod dummy_net;
-mod error;
+pub mod dummy_net;
+pub mod error;
 pub mod mpsc;
-mod net;
-mod workpool;
+pub mod net;
+pub mod workpool;
 
-//use dummy_net as net_;
-use net as net_;
+use dummy_net as net_;
+//use net as net_;
 
 use error::{Error, Result};
 use mpsc::UndoStack;
@@ -135,16 +135,6 @@ pub struct OwnedSymbol<T> {
 }
 unsafe impl<T> Send for OwnedSymbol<T> {}
 
-#[derive(Clone)]
-pub struct SymbolGroup<T> {
-    symbols: Vec<OwnedSymbol<T>>,
-}
-
-//impl<T: 'static> Future for SymbolGroup<T>{
-//    type Output = Reader<T>;
-//
-//}
-
 pub struct Reader<T>(pub *const T);
 unsafe impl<T> Send for Reader<T> {}
 
@@ -190,21 +180,19 @@ impl<T: 'static> Future for OwnedSymbol<T> {
 pub type BoxFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 pub type AsyncFunction = Box<dyn Fn(&Arc<Graph>, Arc<Node>) -> BoxFuture>;
 
-// Node could be split into two structs. One for everything that needs unsafe interior mutability. And one for the other stuff.
-// TODO: Benchmark with and without repr
 //#[repr(align(128))]
 pub struct Node {
     name: &'static str,
     task: AsyncFunction,
-    future: UnsafeCell<BoxFuture>, // X
-    continue_to: AtomicIsize,      // This is just a Waker...
+    future: UnsafeCell<BoxFuture>,
+    continue_to: AtomicIsize,
     awaited_by: RwLock<mpsc::UndoStack<usize>>,
     this_node: usize,
     output: UnsafeCell<Buffer>,
     done: AtomicBool,
     is_being_polled: AtomicBool,
     mpi_instance: i32,
-    net_events: UnsafeCell<Option<Sender<net::Event>>>, // X
+    net_events: UnsafeCell<Option<Sender<net::Event>>>,
 }
 unsafe impl Send for Node {}
 unsafe impl Sync for Node {}

@@ -129,13 +129,12 @@ impl Task for MorphicBlurStage {
     type Output = Vec<f32>;
 
     fn init(self, graph: &mut GraphBuilder<Self>) -> Self::InitOutput {
-        //graph.is_leaf = false;
         let source = graph.lock_symbol(self.input);
+
         graph.task(Box::new(move |graph, node| {
             let source = source.clone().own(graph);
             Box::pin(async move {
                 let m = unsafe { Matrix((*source.await.0).as_ptr(), self.dim) };
-                //std::thread::sleep(Duration::from_secs(3));
                 for y in self.bound[0][1]..self.bound[1][1] {
                     for x in self.bound[0][0]..self.bound[1][0] {
                         let p = (m[[x + 1, y]] + m[[x - 1, y]] + m[[x, y]]) / 3.;
