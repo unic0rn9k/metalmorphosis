@@ -1,5 +1,5 @@
 extern crate test;
-use std::{future::Future, ops::Index, ptr::null, time::Duration};
+use std::ops::Index;
 
 use serde::{Deserialize, Serialize};
 use test::{black_box, Bencher};
@@ -108,14 +108,6 @@ impl Index<[usize; 2]> for Matrix {
         unsafe { &*self.0.add(x + y * self.1[0]) }
     }
 }
-impl Matrix {
-    fn columns(&self) -> usize {
-        self.1[0]
-    }
-    fn rows(&self) -> usize {
-        self.1[1]
-    }
-}
 
 struct MorphicBlur<'a>(&'a Vec<f32>, &'a mut Vec<f32>, &'a mut Vec<f32>, [usize; 2]);
 struct MorphicBlurStage {
@@ -139,7 +131,7 @@ impl Task for MorphicBlurStage {
                     for x in self.bound[0][0]..self.bound[1][0] {
                         let p = (m[[x + 1, y]] + m[[x - 1, y]] + m[[x, y]]) / 3.;
                         unsafe {
-                            (*node.output::<Vec<f32>>())[x * m.rows() + y] = p;
+                            (*node.output::<Vec<f32>>())[x * m.1[1] + y] = p;
                         }
                     }
                 }
@@ -158,7 +150,7 @@ impl<'a> Task for MorphicBlur<'a> {
 
         let input = graph.spawn(Const(self.0), None);
 
-        let chunks = 4;
+        let chunks = 2;
         let chunk = (dim[1] - 1) / chunks;
         let mut output = vec![];
 
@@ -186,16 +178,16 @@ impl<'a> Task for MorphicBlur<'a> {
         graph.task(Box::new(move |graph, _node| {
             let mut output: Vec<_> = output.iter().map(|s| s.clone().own(graph)).collect();
             Box::pin(async move {
-                println!("=== main polled ===");
+                //println!("=== main polled ===");
                 for out in output.drain(..) {
-                    println!("another blur awaited");
+                    //println!("another blur awaited");
                     black_box(out.await);
                     //unsafe {
                     //    table(&*out.await.0, &dim);
                     //}
                 }
 
-                println!("=== main done ===");
+                //println!("=== main done ===");
             })
         }))
     }
@@ -225,19 +217,7 @@ fn morphic(b: &mut Bencher) {
         graph.realize(net_events.clone());
         net.run();
     });
-    println!("Finishing test...");
     graph.kill(net.kill());
 }
 
 const DIM: [usize; 2] = [8000, 80];
-
-//struct BlurStage{
-//    input: *const [f32],
-//    output: *mut [f32],
-//    dim: [usize; 2],
-//    bound: [[usize; 2]; 2],
-//}
-//
-//impl BlurStage{
-//    fn evaluate
-//}

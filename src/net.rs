@@ -6,7 +6,7 @@ use mpi::{
 use serde_derive::{Deserialize, Serialize};
 use std::sync::{
     atomic::Ordering,
-    mpsc::{channel, sync_channel, Receiver, Sender},
+    mpsc::{channel, Receiver, Sender},
     Arc,
 };
 

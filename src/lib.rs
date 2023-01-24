@@ -84,21 +84,21 @@ pub mod workpool;
 use dummy_net as net_;
 //use net as net_;
 
-use error::{Error, Result};
-use mpsc::UndoStack;
+use error::Result;
+
 use workpool::Pool;
 
 pub use mpi::time;
 use serde::{Deserialize, Serialize};
-use std::any::{type_name, Any};
-use std::cell::{RefCell, UnsafeCell};
+use std::any::Any;
+use std::cell::UnsafeCell;
 use std::future::Future;
 use std::hint::spin_loop;
 use std::marker::{PhantomData, PhantomPinned};
 use std::mem::transmute;
 use std::ops::DerefMut;
 use std::pin::Pin;
-use std::rc::Rc;
+
 use std::sync::atomic::Ordering;
 use std::sync::atomic::{AtomicBool, AtomicIsize};
 use std::sync::mpsc::{Receiver, Sender};
@@ -143,7 +143,7 @@ impl<T: 'static> Future for OwnedSymbol<T> {
 
     fn poll(
         self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
+        _cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
         if DEBUG {
             println!(

@@ -1,15 +1,14 @@
 use std::{
     cell::UnsafeCell,
-    hint::black_box,
     ops::DerefMut,
     sync::{
-        atomic::{fence, AtomicIsize, AtomicU16, AtomicUsize, Ordering},
-        Arc, Mutex, RwLock, Weak,
+        atomic::{AtomicIsize, AtomicUsize, Ordering},
+        Arc, RwLock, Weak,
     },
     thread::{self, JoinHandle},
 };
 
-use crate::{error::Result, mpsc, net, Graph, Node, DEBUG};
+use crate::{mpsc, Graph, Node, DEBUG};
 
 #[derive(Clone, Debug)]
 pub struct ThreadId(usize);

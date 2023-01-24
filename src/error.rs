@@ -1,5 +1,5 @@
 //use crate::branch::Signal;
-use std::sync::mpsc::{SendError, TryRecvError};
+use std::sync::mpsc::{TryRecvError};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
